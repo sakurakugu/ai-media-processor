@@ -38,7 +38,9 @@ class App:
 
         self.items: list[Path] = []
         self.results: list[ClassificationResult] = []
+        self.result_tree_rows: dict[Path, str] = {}
         self.preview_image = None
+        self.is_classifying = False
         self.status_var = tk.StringVar(value="就绪")
         self.backend_var = tk.StringVar(value="模拟后端（无模型）")
         self.base_url_var = tk.StringVar(value=DEFAULT_OPENAI_BASE_URL)
@@ -90,11 +92,20 @@ class App:
         action_bar = ttk.Frame(container, padding=(0, 10))
         action_bar.pack(fill="x")
 
-        ttk.Button(action_bar, text="添加文件", command=self.add_files).pack(side=LEFT, padx=4)
-        ttk.Button(action_bar, text="添加文件夹", command=self.add_folder).pack(side=LEFT, padx=4)
-        ttk.Button(action_bar, text="清空", command=self.clear_items).pack(side=LEFT, padx=4)
-        ttk.Button(action_bar, text="分类选中项", command=self.classify_selected).pack(side=LEFT, padx=4)
-        ttk.Button(action_bar, text="全部分类", command=self.classify_all).pack(side=LEFT, padx=4)
+        self.add_files_button = ttk.Button(action_bar, text="添加文件", command=self.add_files)
+        self.add_files_button.pack(side=LEFT, padx=4)
+        self.add_folder_button = ttk.Button(action_bar, text="添加文件夹", command=self.add_folder)
+        self.add_folder_button.pack(side=LEFT, padx=4)
+        self.clear_button = ttk.Button(action_bar, text="清空", command=self.clear_items)
+        self.clear_button.pack(side=LEFT, padx=4)
+        self.classify_selected_button = ttk.Button(
+            action_bar,
+            text="分类选中项",
+            command=self.classify_selected,
+        )
+        self.classify_selected_button.pack(side=LEFT, padx=4)
+        self.classify_all_button = ttk.Button(action_bar, text="全部分类", command=self.classify_all)
+        self.classify_all_button.pack(side=LEFT, padx=4)
         ttk.Button(action_bar, text="导出 CSV", command=self.export_csv).pack(side=LEFT, padx=4)
         ttk.Button(action_bar, text="导出 JSON", command=self.export_json).pack(side=LEFT, padx=4)
 
@@ -149,8 +160,12 @@ class App:
             self._add_paths(discover_images([Path(folder)]))
 
     def clear_items(self) -> None:
+        if self.is_classifying:
+            messagebox.showinfo("提示", "分类进行中，请等待当前任务完成。")
+            return
         self.items.clear()
         self.results.clear()
+        self.result_tree_rows.clear()
         self.file_list.delete(0, END)
         for row in self.result_tree.get_children():
             self.result_tree.delete(row)
@@ -220,7 +235,18 @@ class App:
         thread.start()
 
     def _run_classification(self, image_paths: list[Path]) -> None:
-        backend = self._create_backend()
+        if self.is_classifying:
+            messagebox.showinfo("提示", "已有分类任务在进行中。")
+            return
+        try:
+            backend = self._create_backend()
+        except Exception as exc:
+            messagebox.showerror("配置错误", str(exc))
+            self.status_var.set(f"配置错误：{exc}")
+            return
+        self.is_classifying = True
+        self._set_classification_controls(enabled=False)
+        image_paths = list(image_paths)
         self.status_var.set(f"正在分类，共 {len(image_paths)} 张图片…")
         thread = threading.Thread(
             target=self._classify_worker,
@@ -231,10 +257,18 @@ class App:
 
     def _classify_worker(self, backend, image_paths: list[Path]) -> None:
         try:
-            results = classify_images(backend, image_paths)
-            self.result_queue.put(("results", results))
+            results = classify_images(backend, image_paths, on_result=self._queue_progress_result)
+            self.result_queue.put(("classification_done", len(results)))
         except Exception as exc:
             self.result_queue.put(("error", str(exc)))
+
+    def _queue_progress_result(
+        self,
+        result: ClassificationResult,
+        completed: int,
+        total: int,
+    ) -> None:
+        self.result_queue.put(("progress_result", (result, completed, total)))
 
     def _test_connection_worker(self, backend) -> None:
         try:
@@ -247,9 +281,19 @@ class App:
         try:
             while True:
                 message_type, payload = self.result_queue.get_nowait()
-                if message_type == "results":
-                    self._merge_results(payload)
+                if message_type == "progress_result":
+                    result, completed, total = payload
+                    self._merge_result(result)
+                    self.status_var.set(
+                        f"正在分类，已完成 {completed}/{total} 张：{result.image_path.name}"
+                    )
+                elif message_type == "classification_done":
+                    self.is_classifying = False
+                    self._set_classification_controls(enabled=True)
+                    self.status_var.set(f"分类完成，本次处理 {payload} 张图片。")
                 elif message_type == "error":
+                    self.is_classifying = False
+                    self._set_classification_controls(enabled=True)
                     self.status_var.set(f"错误：{payload}")
                     messagebox.showerror("分类失败", payload)
                 elif message_type == "connection_ok":
@@ -262,29 +306,49 @@ class App:
             pass
         self.root.after(150, self._poll_queue)
 
-    def _merge_results(self, new_results: list[ClassificationResult]) -> None:
+    def _merge_result(self, new_result: ClassificationResult) -> None:
         index_by_path = {result.image_path: idx for idx, result in enumerate(self.results)}
-        for result in new_results:
-            if result.image_path in index_by_path:
-                self.results[index_by_path[result.image_path]] = result
-            else:
-                self.results.append(result)
-        self._refresh_result_tree()
-        self.status_var.set(f"分类完成，本次处理 {len(new_results)} 张图片。")
+        if new_result.image_path in index_by_path:
+            self.results[index_by_path[new_result.image_path]] = new_result
+        else:
+            self.results.append(new_result)
+        self._upsert_result_row(new_result)
 
     def _refresh_result_tree(self) -> None:
+        self.result_tree_rows.clear()
         for row in self.result_tree.get_children():
             self.result_tree.delete(row)
         for result in self.results:
-            self.result_tree.insert(
+            item_id = self.result_tree.insert(
                 "",
                 END,
-                values=(
-                    str(result.image_path),
-                    f"{label_to_display_name(result.label)} ({result.label})",
-                    f"{result.confidence:.2f}",
-                ),
+                values=self._result_row_values(result),
             )
+            self.result_tree_rows[result.image_path] = item_id
+
+    def _upsert_result_row(self, result: ClassificationResult) -> None:
+        values = self._result_row_values(result)
+        item_id = self.result_tree_rows.get(result.image_path)
+        if item_id is None:
+            item_id = self.result_tree.insert("", END, values=values)
+            self.result_tree_rows[result.image_path] = item_id
+            return
+        self.result_tree.item(item_id, values=values)
+
+    def _result_row_values(self, result: ClassificationResult) -> tuple[str, str, str]:
+        return (
+            str(result.image_path),
+            f"{label_to_display_name(result.label)} ({result.label})",
+            f"{result.confidence:.2f}",
+        )
+
+    def _set_classification_controls(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        self.add_files_button.configure(state=state)
+        self.add_folder_button.configure(state=state)
+        self.clear_button.configure(state=state)
+        self.classify_selected_button.configure(state=state)
+        self.classify_all_button.configure(state=state)
 
     def _create_backend(self):
         backend_name = BACKEND_OPTIONS.get(self.backend_var.get(), "mock")

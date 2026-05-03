@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .backends.base import BaseClassifierBackend
 from .models import ClassificationResult, label_to_display_name
@@ -28,10 +28,16 @@ def discover_images(paths: Iterable[Path]) -> list[Path]:
 def classify_images(
     backend: BaseClassifierBackend,
     image_paths: Iterable[Path],
+    on_result: Callable[[ClassificationResult, int, int], None] | None = None,
 ) -> list[ClassificationResult]:
+    image_list = list(image_paths)
+    total = len(image_list)
     results: list[ClassificationResult] = []
-    for image_path in image_paths:
-        results.append(backend.classify(image_path))
+    for index, image_path in enumerate(image_list, start=1):
+        result = backend.classify(image_path)
+        results.append(result)
+        if on_result is not None:
+            on_result(result, index, total)
     return results
 
 
