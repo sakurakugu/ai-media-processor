@@ -13,9 +13,11 @@ from .models import (
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
     BackendConfig,
+    SkippedImage,
     label_to_display_name,
 )
-from .pipeline import classify_images, discover_images, export_results_csv, export_results_json
+from .pipeline import classify_images, discover_images
+from .pipeline import export_results_csv_with_skips, export_results_json_with_skips
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +31,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     cli_parser = subparsers.add_parser("cli", help="命令行批量分类")
     cli_parser.add_argument("inputs", nargs="+", help="图片文件或目录路径")
+    cli_parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="目录输入时只扫描当前目录，不递归子目录",
+    )
     cli_parser.add_argument(
         "--backend",
         choices=["mock", "ollama", "openai_compatible"],
@@ -76,13 +83,19 @@ def create_backend(args) -> MockClassifierBackend | OllamaBackend | OpenAICompat
 
 def run_cli(args) -> int:
     inputs = [Path(item) for item in args.inputs]
-    image_paths = discover_images(inputs)
+    image_paths = discover_images(inputs, recursive=not args.no_recursive)
     if not image_paths:
         print("未发现可处理的图片。")
         return 2 if args.fail_on_empty else 0
 
     backend = create_backend(args)
-    results = classify_images(backend, image_paths)
+    skipped: list[SkippedImage] = []
+
+    def on_skip(item: SkippedImage, _completed: int, _total: int) -> None:
+        skipped.append(item)
+        print(f"跳过\t{item.image_path}\t{item.reason}")
+
+    results = classify_images(backend, image_paths, on_skip=on_skip)
 
     for result in results:
         print(
@@ -91,15 +104,15 @@ def run_cli(args) -> int:
 
     if args.csv:
         output_path = Path(args.csv)
-        export_results_csv(results, output_path)
+        export_results_csv_with_skips(results, skipped, output_path)
         print(f"\n已导出 CSV：{output_path}")
 
     if args.json:
         output_path = Path(args.json)
-        export_results_json(results, output_path)
+        export_results_json_with_skips(results, skipped, output_path)
         print(f"\n已导出 JSON：{output_path}")
 
-    print(f"\n处理完成，共 {len(results)} 张图片。")
+    print(f"\n处理完成，共 {len(results)} 张图片，跳过 {len(skipped)} 个文件。")
     return 0
 
 

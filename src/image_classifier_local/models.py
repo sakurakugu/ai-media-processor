@@ -54,6 +54,12 @@ class ClassificationResult:
 
 
 @dataclass(slots=True)
+class SkippedImage:
+    image_path: Path
+    reason: str
+
+
+@dataclass(slots=True)
 class BackendConfig:
     backend_name: str
     model: str = ""
@@ -68,3 +74,7 @@ class ClassifierRequest:
     image_path: Path
     labels: list[str] = field(default_factory=lambda: ALLOWED_LABELS.copy())
     prompt_hint: Optional[str] = None
+
+
+class InvalidImageFileError(ValueError):
+    pass

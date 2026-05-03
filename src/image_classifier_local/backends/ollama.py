@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import io
 from pathlib import Path
 
 import requests
+from PIL import Image, UnidentifiedImageError
 
 from .base import BaseClassifierBackend
-from ..models import ALLOWED_LABELS, BackendConfig, ClassificationResult
+from ..models import ALLOWED_LABELS, BackendConfig, ClassificationResult, InvalidImageFileError
 
 
 SYSTEM_PROMPT = """你是一个图像分类引擎。
@@ -42,12 +44,15 @@ class OllamaBackend(BaseClassifierBackend):
 
     def classify(self, image_path: Path) -> ClassificationResult:
         payload = self._build_payload(image_path)
-        response = requests.post(
-            f"{self._root_url()}/api/chat",
-            json=payload,
-            timeout=self.config.timeout_seconds,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                f"{self._root_url()}/api/chat",
+                json=payload,
+                timeout=self.config.timeout_seconds,
+            )
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise RuntimeError(self._build_http_error_message(exc, image_path)) from exc
         data = response.json()
         content = self._extract_content(data)
         parsed = self._parse_content(content)
@@ -85,7 +90,7 @@ class OllamaBackend(BaseClassifierBackend):
         return f"Ollama 连接成功。服务地址：{self._root_url()}"
 
     def _build_payload(self, image_path: Path) -> dict:
-        encoded_image = base64.b64encode(image_path.read_bytes()).decode("utf-8")
+        encoded_image = self._encode_image(image_path)
         return {
             "model": self.config.model,
             "messages": [
@@ -119,3 +124,43 @@ class OllamaBackend(BaseClassifierBackend):
 
     def _parse_content(self, content: str) -> dict:
         return self._parse_json_response(content)
+
+    def _encode_image(self, image_path: Path) -> str:
+        try:
+            with Image.open(image_path) as image:
+                image.load()
+                width = max(image.width, 32)
+                height = max(image.height, 32)
+                if (width, height) != image.size:
+                    image = image.resize((width, height))
+                if image.mode not in {"RGB", "RGBA"}:
+                    image = image.convert("RGBA")
+
+                buffer = io.BytesIO()
+                image.save(buffer, format="PNG")
+        except UnidentifiedImageError as exc:
+            raise InvalidImageFileError(f"已跳过，图片无法识别或已损坏：{image_path}") from exc
+        except OSError as exc:
+            raise InvalidImageFileError(f"已跳过，图片读取失败：{image_path}；{exc}") from exc
+
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def _build_http_error_message(self, exc: requests.HTTPError, image_path: Path) -> str:
+        response = exc.response
+        if response is None:
+            return f"Ollama 请求失败：{exc}"
+
+        message = ""
+        try:
+            payload = response.json()
+        except ValueError:
+            message = response.text.strip()
+        else:
+            if isinstance(payload, dict):
+                message = str(payload.get("error", "")).strip()
+            else:
+                message = str(payload).strip()
+
+        if message:
+            return f"Ollama 请求失败：{image_path.name}；HTTP {response.status_code}；{message}"
+        return f"Ollama 请求失败：{image_path.name}；HTTP {response.status_code}"

@@ -18,14 +18,15 @@ from .models import (
     DEFAULT_OPENAI_MODEL,
     BackendConfig,
     ClassificationResult,
+    SkippedImage,
     label_to_display_name,
 )
 from .pipeline import (
     ClassificationCancelled,
     classify_images,
     discover_images,
-    export_results_csv,
-    export_results_json,
+    export_results_csv_with_skips,
+    export_results_json_with_skips,
     move_results_to_label_folders,
 )
 
@@ -45,16 +46,19 @@ class App:
 
         self.items: list[Path] = []
         self.results: list[ClassificationResult] = []
+        self.skipped_items: list[SkippedImage] = []
         self.result_tree_rows: dict[Path, str] = {}
         self.preview_image = None
         self.is_classifying = False
         self.stop_requested = False
+        self.skipped_count = 0
         self.cancel_event = threading.Event()
         self.status_var = tk.StringVar(value="就绪")
         self.backend_var = tk.StringVar(value="本地 Ollama")
         self.base_url_var = tk.StringVar(value=DEFAULT_OLLAMA_BASE_URL)
         self.model_var = tk.StringVar(value=DEFAULT_OLLAMA_MODEL)
         self.api_key_var = tk.StringVar(value="")
+        self.recursive_scan_var = tk.BooleanVar(value=True)
         self.result_queue: queue.Queue = queue.Queue()
 
         self._build_layout()
@@ -105,6 +109,11 @@ class App:
         self.add_files_button.pack(side=LEFT, padx=4)
         self.add_folder_button = ttk.Button(action_bar, text="添加文件夹", command=self.add_folder)
         self.add_folder_button.pack(side=LEFT, padx=4)
+        ttk.Checkbutton(
+            action_bar,
+            text="递归子目录",
+            variable=self.recursive_scan_var,
+        ).pack(side=LEFT, padx=(4, 12))
         self.clear_button = ttk.Button(action_bar, text="清空", command=self.clear_items)
         self.clear_button.pack(side=LEFT, padx=4)
         self.classify_selected_button = ttk.Button(
@@ -158,6 +167,12 @@ class App:
         self.reason_text = tk.Text(detail_frame, height=10, wrap="word")
         self.reason_text.pack(fill=BOTH, expand=True, pady=(8, 0))
 
+        skipped_frame = ttk.LabelFrame(right, text="跳过文件", padding=8)
+        skipped_frame.pack(fill=BOTH, expand=False, pady=(10, 0))
+
+        self.skipped_text = tk.Text(skipped_frame, height=7, wrap="word")
+        self.skipped_text.pack(fill=BOTH, expand=True)
+
         status = ttk.Label(container, textvariable=self.status_var, anchor=W)
         status.pack(fill="x", pady=(10, 0))
 
@@ -171,7 +186,9 @@ class App:
     def add_folder(self) -> None:
         folder = filedialog.askdirectory(title="选择文件夹")
         if folder:
-            self._add_paths(discover_images([Path(folder)]))
+            self._add_paths(
+                discover_images([Path(folder)], recursive=self.recursive_scan_var.get())
+            )
 
     def clear_items(self) -> None:
         if self.is_classifying:
@@ -179,11 +196,13 @@ class App:
             return
         self.items.clear()
         self.results.clear()
+        self.skipped_items.clear()
         self.result_tree_rows.clear()
         self.file_list.delete(0, END)
         for row in self.result_tree.get_children():
             self.result_tree.delete(row)
         self.reason_text.delete("1.0", END)
+        self.skipped_text.delete("1.0", END)
         self.preview_label.configure(image="", text="未选择图片")
         self.status_var.set("已清空")
 
@@ -212,7 +231,7 @@ class App:
         )
         if not output:
             return
-        export_results_csv(self.results, Path(output))
+        export_results_csv_with_skips(self.results, self.skipped_items, Path(output))
         self.status_var.set(f"已导出 CSV：{output}")
 
     def export_json(self) -> None:
@@ -226,7 +245,7 @@ class App:
         )
         if not output:
             return
-        export_results_json(self.results, Path(output))
+        export_results_json_with_skips(self.results, self.skipped_items, Path(output))
         self.status_var.set(f"已导出 JSON：{output}")
 
     def move_classified_images(self) -> None:
@@ -288,9 +307,12 @@ class App:
             return
         self.is_classifying = True
         self.stop_requested = False
+        self.skipped_count = 0
+        self.skipped_items.clear()
         self.cancel_event.clear()
         self._set_classification_controls(enabled=False)
         image_paths = list(image_paths)
+        self.skipped_text.delete("1.0", END)
         self.status_var.set(f"正在分类，共 {len(image_paths)} 张图片…")
         thread = threading.Thread(
             target=self._classify_worker,
@@ -305,6 +327,7 @@ class App:
                 backend,
                 image_paths,
                 on_result=self._queue_progress_result,
+                on_skip=self._queue_skipped_item,
                 should_stop=self.cancel_event.is_set,
             )
             self.result_queue.put(("classification_done", len(results)))
@@ -329,6 +352,14 @@ class App:
     ) -> None:
         self.result_queue.put(("progress_result", (result, completed, total)))
 
+    def _queue_skipped_item(
+        self,
+        item: SkippedImage,
+        completed: int,
+        total: int,
+    ) -> None:
+        self.result_queue.put(("skipped_item", (item, completed, total)))
+
     def _test_connection_worker(self, backend) -> None:
         try:
             message = backend.test_connection()
@@ -351,9 +382,19 @@ class App:
                         self.status_var.set(
                             f"正在分类，已完成 {completed}/{total} 张：{result.image_path.name}"
                         )
+                elif message_type == "skipped_item":
+                    item, completed, total = payload
+                    self.skipped_count += 1
+                    self.skipped_items.append(item)
+                    self._append_skipped_item(item)
+                    self.status_var.set(
+                        f"已跳过 {completed}/{total} 张：{item.image_path.name}；{item.reason}"
+                    )
                 elif message_type == "classification_done":
                     self._finish_classification()
-                    self.status_var.set(f"分类完成，本次处理 {payload} 张图片。")
+                    self.status_var.set(
+                        f"分类完成，本次处理 {payload} 张图片，跳过 {self.skipped_count} 个文件。"
+                    )
                 elif message_type == "classification_cancelled":
                     self._finish_classification()
                     self.status_var.set(payload)
@@ -480,6 +521,10 @@ class App:
             self.preview_label.configure(image=self.preview_image, text="")
         except Exception:
             self.preview_label.configure(image="", text=str(image_path))
+
+    def _append_skipped_item(self, item: SkippedImage) -> None:
+        self.skipped_text.insert("end", f"{item.image_path}\n{item.reason}\n\n")
+        self.skipped_text.see("end")
 
 
 def launch() -> None:

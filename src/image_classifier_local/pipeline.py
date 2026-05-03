@@ -6,8 +6,16 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
+from PIL import Image, UnidentifiedImageError
+
 from .backends.base import BaseClassifierBackend
-from .models import ClassificationResult, label_to_display_name, label_to_folder_name
+from .models import (
+    ClassificationResult,
+    InvalidImageFileError,
+    SkippedImage,
+    label_to_display_name,
+    label_to_folder_name,
+)
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
@@ -17,14 +25,15 @@ class ClassificationCancelled(Exception):
     pass
 
 
-def discover_images(paths: Iterable[Path]) -> list[Path]:
+def discover_images(paths: Iterable[Path], recursive: bool = True) -> list[Path]:
     discovered: list[Path] = []
     for path in paths:
         if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
             discovered.append(path)
             continue
         if path.is_dir():
-            for candidate in path.rglob("*"):
+            candidates = path.rglob("*") if recursive else path.iterdir()
+            for candidate in candidates:
                 if candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES:
                     discovered.append(candidate)
     return sorted(set(discovered))
@@ -34,6 +43,7 @@ def classify_images(
     backend: BaseClassifierBackend,
     image_paths: Iterable[Path],
     on_result: Callable[[ClassificationResult, int, int], None] | None = None,
+    on_skip: Callable[[SkippedImage, int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[ClassificationResult]:
     image_list = list(image_paths)
@@ -42,7 +52,13 @@ def classify_images(
     for index, image_path in enumerate(image_list, start=1):
         if should_stop is not None and should_stop():
             raise ClassificationCancelled(f"分类已停止，已完成 {len(results)}/{total} 张图片。")
-        result = backend.classify(image_path)
+        try:
+            _validate_image_file(image_path)
+            result = backend.classify(image_path)
+        except InvalidImageFileError as exc:
+            if on_skip is not None:
+                on_skip(SkippedImage(image_path=image_path, reason=str(exc)), index, total)
+            continue
         results.append(result)
         if on_result is not None:
             on_result(result, index, total)
@@ -50,13 +66,24 @@ def classify_images(
 
 
 def export_results_csv(results: list[ClassificationResult], output_path: Path) -> None:
+    export_results_csv_with_skips(results, [], output_path)
+
+
+def export_results_csv_with_skips(
+    results: list[ClassificationResult],
+    skipped_items: list[SkippedImage],
+    output_path: Path,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["image_path", "label", "label_zh", "confidence", "reason", "raw_response"])
+        writer.writerow(
+            ["status", "image_path", "label", "label_zh", "confidence", "reason", "raw_response"]
+        )
         for result in results:
             writer.writerow(
                 [
+                    "classified",
                     str(result.image_path),
                     result.label,
                     label_to_display_name(result.label),
@@ -65,12 +92,23 @@ def export_results_csv(results: list[ClassificationResult], output_path: Path) -
                     result.raw_response,
                 ]
             )
+        for item in skipped_items:
+            writer.writerow(["skipped", str(item.image_path), "", "", "", item.reason, ""])
 
 
 def export_results_json(results: list[ClassificationResult], output_path: Path) -> None:
+    export_results_json_with_skips(results, [], output_path)
+
+
+def export_results_json_with_skips(
+    results: list[ClassificationResult],
+    skipped_items: list[SkippedImage],
+    output_path: Path,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload = [
         {
+            "status": "classified",
             "image_path": str(result.image_path),
             "label": result.label,
             "label_zh": label_to_display_name(result.label),
@@ -80,6 +118,18 @@ def export_results_json(results: list[ClassificationResult], output_path: Path) 
         }
         for result in results
     ]
+    payload.extend(
+        {
+            "status": "skipped",
+            "image_path": str(item.image_path),
+            "label": "",
+            "label_zh": "",
+            "confidence": None,
+            "reason": item.reason,
+            "raw_response": "",
+        }
+        for item in skipped_items
+    )
     output_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -129,3 +179,16 @@ def _dedupe_target_path(target_path: Path, source_path: Path) -> Path:
         if not candidate.exists():
             return candidate
         index += 1
+
+
+def _validate_image_file(image_path: Path) -> None:
+    if image_path.suffix.lower() not in IMAGE_SUFFIXES:
+        raise InvalidImageFileError(f"已跳过，文件扩展名不是受支持的图片格式：{image_path.suffix}")
+
+    try:
+        with Image.open(image_path) as image:
+            image.verify()
+    except UnidentifiedImageError as exc:
+        raise InvalidImageFileError("已跳过，文件内容不是有效图片。") from exc
+    except OSError as exc:
+        raise InvalidImageFileError(f"已跳过，图片文件损坏或无法读取：{exc}") from exc

@@ -76,6 +76,7 @@ ollama pull qwen3.5:4b
 ```powershell
 # 启动模型并确认本地服务正常
 ollama run qwen3.5:4b
+# ollama stop qwen3.5:4b # 记得关闭
 ```
 
 ### 2. 运行 GUI
@@ -91,6 +92,7 @@ python app.py
 - 选择 `本地 Ollama`
 - 点击 `连接本地 Ollama`
 - 点击 `测试连接`
+- 按需勾选 `递归子目录`
 
 也可以用统一入口启动：
 
@@ -104,6 +106,12 @@ python main.py gui
 
 ```powershell
 python main.py cli D:\images
+```
+
+如果只想扫描当前目录、不递归子目录：
+
+```powershell
+python main.py cli D:\images --no-recursive
 ```
 
 ### 导出 CSV
