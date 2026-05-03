@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import csv
 import json
+import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
 from .backends.base import BaseClassifierBackend
-from .models import ClassificationResult, label_to_display_name
+from .models import ClassificationResult, label_to_display_name, label_to_folder_name
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+
+
+class ClassificationCancelled(Exception):
+    pass
 
 
 def discover_images(paths: Iterable[Path]) -> list[Path]:
@@ -29,11 +34,14 @@ def classify_images(
     backend: BaseClassifierBackend,
     image_paths: Iterable[Path],
     on_result: Callable[[ClassificationResult, int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[ClassificationResult]:
     image_list = list(image_paths)
     total = len(image_list)
     results: list[ClassificationResult] = []
     for index, image_path in enumerate(image_list, start=1):
+        if should_stop is not None and should_stop():
+            raise ClassificationCancelled(f"分类已停止，已完成 {len(results)}/{total} 张图片。")
         result = backend.classify(image_path)
         results.append(result)
         if on_result is not None:
@@ -76,3 +84,48 @@ def export_results_json(results: list[ClassificationResult], output_path: Path) 
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def move_results_to_label_folders(
+    results: list[ClassificationResult],
+    output_dir: Path,
+) -> list[ClassificationResult]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    moved_results: list[ClassificationResult] = []
+    for result in results:
+        source_path = result.image_path
+        target_dir = output_dir / label_to_folder_name(result.label)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / source_path.name
+        if source_path.resolve() != target_path.resolve():
+            target_path = _dedupe_target_path(target_path, source_path)
+            shutil.move(str(source_path), str(target_path))
+        moved_results.append(
+            ClassificationResult(
+                image_path=target_path,
+                label=result.label,
+                confidence=result.confidence,
+                reason=result.reason,
+                raw_response=result.raw_response,
+            )
+        )
+    return moved_results
+
+
+def _dedupe_target_path(target_path: Path, source_path: Path) -> Path:
+    if not target_path.exists():
+        return target_path
+    try:
+        if target_path.resolve() == source_path.resolve():
+            return target_path
+    except FileNotFoundError:
+        return target_path
+
+    stem = target_path.stem
+    suffix = target_path.suffix
+    index = 1
+    while True:
+        candidate = target_path.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1

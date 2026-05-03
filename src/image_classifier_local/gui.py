@@ -20,7 +20,14 @@ from .models import (
     ClassificationResult,
     label_to_display_name,
 )
-from .pipeline import classify_images, discover_images, export_results_csv, export_results_json
+from .pipeline import (
+    ClassificationCancelled,
+    classify_images,
+    discover_images,
+    export_results_csv,
+    export_results_json,
+    move_results_to_label_folders,
+)
 
 
 BACKEND_OPTIONS = {
@@ -41,10 +48,12 @@ class App:
         self.result_tree_rows: dict[Path, str] = {}
         self.preview_image = None
         self.is_classifying = False
+        self.stop_requested = False
+        self.cancel_event = threading.Event()
         self.status_var = tk.StringVar(value="就绪")
-        self.backend_var = tk.StringVar(value="模拟后端（无模型）")
-        self.base_url_var = tk.StringVar(value=DEFAULT_OPENAI_BASE_URL)
-        self.model_var = tk.StringVar(value=DEFAULT_OPENAI_MODEL)
+        self.backend_var = tk.StringVar(value="本地 Ollama")
+        self.base_url_var = tk.StringVar(value=DEFAULT_OLLAMA_BASE_URL)
+        self.model_var = tk.StringVar(value=DEFAULT_OLLAMA_MODEL)
         self.api_key_var = tk.StringVar(value="")
         self.result_queue: queue.Queue = queue.Queue()
 
@@ -106,6 +115,11 @@ class App:
         self.classify_selected_button.pack(side=LEFT, padx=4)
         self.classify_all_button = ttk.Button(action_bar, text="全部分类", command=self.classify_all)
         self.classify_all_button.pack(side=LEFT, padx=4)
+        self.stop_button = ttk.Button(action_bar, text="停止分类", command=self.stop_classification)
+        self.stop_button.pack(side=LEFT, padx=4)
+        self.stop_button.configure(state="disabled")
+        self.move_button = ttk.Button(action_bar, text="按分类移动图片", command=self.move_classified_images)
+        self.move_button.pack(side=LEFT, padx=4)
         ttk.Button(action_bar, text="导出 CSV", command=self.export_csv).pack(side=LEFT, padx=4)
         ttk.Button(action_bar, text="导出 JSON", command=self.export_json).pack(side=LEFT, padx=4)
 
@@ -215,6 +229,34 @@ class App:
         export_results_json(self.results, Path(output))
         self.status_var.set(f"已导出 JSON：{output}")
 
+    def move_classified_images(self) -> None:
+        if not self.results:
+            messagebox.showinfo("提示", "当前没有可移动的分类结果。")
+            return
+        output_dir = filedialog.askdirectory(title="选择分类输出文件夹")
+        if not output_dir:
+            return
+
+        old_results = list(self.results)
+        try:
+            new_results = move_results_to_label_folders(old_results, Path(output_dir))
+        except Exception as exc:
+            self.status_var.set(f"移动失败：{exc}")
+            messagebox.showerror("移动失败", str(exc))
+            return
+
+        path_remap = {
+            old_result.image_path: new_result.image_path
+            for old_result, new_result in zip(old_results, new_results)
+        }
+        self.results = new_results
+        self.items = sorted(path_remap.get(path, path) for path in self.items)
+        self._refresh_file_list()
+        self._refresh_result_tree()
+        self.reason_text.delete("1.0", END)
+        self.preview_label.configure(image="", text="未选择图片")
+        self.status_var.set(f"已按分类移动 {len(new_results)} 张图片到：{output_dir}")
+
     def connect_local_ollama(self) -> None:
         self.backend_var.set("本地 Ollama")
         self.base_url_var.set(DEFAULT_OLLAMA_BASE_URL)
@@ -245,6 +287,8 @@ class App:
             self.status_var.set(f"配置错误：{exc}")
             return
         self.is_classifying = True
+        self.stop_requested = False
+        self.cancel_event.clear()
         self._set_classification_controls(enabled=False)
         image_paths = list(image_paths)
         self.status_var.set(f"正在分类，共 {len(image_paths)} 张图片…")
@@ -257,10 +301,25 @@ class App:
 
     def _classify_worker(self, backend, image_paths: list[Path]) -> None:
         try:
-            results = classify_images(backend, image_paths, on_result=self._queue_progress_result)
+            results = classify_images(
+                backend,
+                image_paths,
+                on_result=self._queue_progress_result,
+                should_stop=self.cancel_event.is_set,
+            )
             self.result_queue.put(("classification_done", len(results)))
+        except ClassificationCancelled as exc:
+            self.result_queue.put(("classification_cancelled", str(exc)))
         except Exception as exc:
             self.result_queue.put(("error", str(exc)))
+
+    def stop_classification(self) -> None:
+        if not self.is_classifying or self.stop_requested:
+            return
+        self.stop_requested = True
+        self.cancel_event.set()
+        self.stop_button.configure(state="disabled")
+        self.status_var.set("正在停止，等待当前图片处理完成…")
 
     def _queue_progress_result(
         self,
@@ -284,16 +343,23 @@ class App:
                 if message_type == "progress_result":
                     result, completed, total = payload
                     self._merge_result(result)
-                    self.status_var.set(
-                        f"正在分类，已完成 {completed}/{total} 张：{result.image_path.name}"
-                    )
+                    if self.stop_requested:
+                        self.status_var.set(
+                            f"正在停止，当前已完成 {completed}/{total} 张：{result.image_path.name}"
+                        )
+                    else:
+                        self.status_var.set(
+                            f"正在分类，已完成 {completed}/{total} 张：{result.image_path.name}"
+                        )
                 elif message_type == "classification_done":
-                    self.is_classifying = False
-                    self._set_classification_controls(enabled=True)
+                    self._finish_classification()
                     self.status_var.set(f"分类完成，本次处理 {payload} 张图片。")
+                elif message_type == "classification_cancelled":
+                    self._finish_classification()
+                    self.status_var.set(payload)
+                    messagebox.showinfo("已停止", payload)
                 elif message_type == "error":
-                    self.is_classifying = False
-                    self._set_classification_controls(enabled=True)
+                    self._finish_classification()
                     self.status_var.set(f"错误：{payload}")
                     messagebox.showerror("分类失败", payload)
                 elif message_type == "connection_ok":
@@ -349,6 +415,14 @@ class App:
         self.clear_button.configure(state=state)
         self.classify_selected_button.configure(state=state)
         self.classify_all_button.configure(state=state)
+        self.move_button.configure(state=state)
+        self.stop_button.configure(state="disabled" if enabled else "normal")
+
+    def _finish_classification(self) -> None:
+        self.is_classifying = False
+        self.stop_requested = False
+        self.cancel_event.clear()
+        self._set_classification_controls(enabled=True)
 
     def _create_backend(self):
         backend_name = BACKEND_OPTIONS.get(self.backend_var.get(), "mock")
@@ -369,10 +443,13 @@ class App:
     def _add_paths(self, paths: list[Path]) -> None:
         merged = sorted(set(self.items).union(paths))
         self.items = merged
+        self._refresh_file_list()
+        self.status_var.set(f"已加载 {len(self.items)} 张图片。")
+
+    def _refresh_file_list(self) -> None:
         self.file_list.delete(0, END)
         for path in self.items:
             self.file_list.insert(END, str(path))
-        self.status_var.set(f"已加载 {len(self.items)} 张图片。")
 
     def _on_select_item(self, _event=None) -> None:
         selected = self.file_list.curselection()

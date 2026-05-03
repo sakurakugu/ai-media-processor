@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 from pathlib import Path
 
 import requests
@@ -119,12 +118,4 @@ class OllamaBackend(BaseClassifierBackend):
         return str(content)
 
     def _parse_content(self, content: str) -> dict:
-        cleaned = content.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.strip("`")
-            if cleaned.startswith("json"):
-                cleaned = cleaned[4:].strip()
-        try:
-            return json.loads(cleaned)
-        except json.JSONDecodeError:
-            return {"label": "other", "confidence": 0.0, "reason": cleaned}
+        return self._parse_json_response(content)

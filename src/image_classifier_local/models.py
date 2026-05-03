@@ -27,9 +27,21 @@ LABEL_DISPLAY_NAMES = {
     "other": "其他",
 }
 
+LABEL_FOLDER_NAMES = {
+    "screenshot_text": "截图文字图",
+    "cosplay": "Cosplay",
+    "anime_art": "二次元美图",
+    "meme": "表情包梗图",
+    "other": "其他",
+}
+
 
 def label_to_display_name(label: str) -> str:
     return LABEL_DISPLAY_NAMES.get(label, label)
+
+
+def label_to_folder_name(label: str) -> str:
+    return LABEL_FOLDER_NAMES.get(label, label)
 
 
 @dataclass(slots=True)
