@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import json
-import mimetypes
 from pathlib import Path
 
 import requests
@@ -37,21 +36,20 @@ Rules:
 """
 
 
-class OpenAICompatibleBackend(BaseClassifierBackend):
+class OllamaBackend(BaseClassifierBackend):
     def __init__(self, config: BackendConfig):
         self.config = config
 
     def classify(self, image_path: Path) -> ClassificationResult:
         payload = self._build_payload(image_path)
         response = requests.post(
-            f"{self.config.base_url.rstrip('/')}/chat/completions",
-            headers=self._headers(),
+            f"{self._root_url()}/api/chat",
             json=payload,
             timeout=self.config.timeout_seconds,
         )
         response.raise_for_status()
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        content = self._extract_content(data)
         parsed = self._parse_content(content)
         label = parsed.get("label", "other")
         if label not in ALLOWED_LABELS:
@@ -71,54 +69,53 @@ class OpenAICompatibleBackend(BaseClassifierBackend):
             raw_response=content,
         )
 
-    def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", **self.config.extra_headers}
-        if self.config.api_key:
-            headers["Authorization"] = f"Bearer {self.config.api_key}"
-        return headers
+    def test_connection(self) -> str:
+        response = requests.get(
+            f"{self._root_url()}/api/tags",
+            timeout=min(self.config.timeout_seconds, 15),
+        )
+        response.raise_for_status()
+        data = response.json()
+        models = [item.get("name", "") for item in data.get("models", []) if item.get("name")]
+        if self.config.model and models and self.config.model not in models:
+            return (
+                f"Ollama 服务可访问，但未找到模型 {self.config.model}。"
+                f" 当前已下载：{', '.join(models[:8])}"
+            )
+        return f"Ollama 连接成功。服务地址：{self._root_url()}"
 
     def _build_payload(self, image_path: Path) -> dict:
-        image_url = self._to_data_url(image_path)
+        encoded_image = base64.b64encode(image_path.read_bytes()).decode("utf-8")
         return {
             "model": self.config.model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Classify this image into one label and return JSON only.",
-                        },
-                        {"type": "image_url", "image_url": {"url": image_url}},
-                    ],
+                    "content": "Classify this image into one label and return JSON only.",
+                    "images": [encoded_image],
                 },
             ],
-            "temperature": 0,
-            "max_tokens": 256,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "stream": False,
+            "think": False,
+            "options": {"temperature": 0},
         }
 
-    def test_connection(self) -> str:
-        response = requests.get(
-            f"{self.config.base_url.rstrip('/')}/models",
-            headers=self._headers(),
-            timeout=min(self.config.timeout_seconds, 15),
-        )
-        response.raise_for_status()
-        data = response.json()
-        models = [item.get("id", "") for item in data.get("data", [])]
-        if self.config.model and models and self.config.model not in models:
-            return (
-                f"服务可访问，但未找到模型 {self.config.model}。"
-                f" 当前可见模型：{', '.join(models[:8])}"
-            )
-        return f"连接成功。服务地址：{self.config.base_url}"
+    def _root_url(self) -> str:
+        base_url = self.config.base_url.rstrip("/")
+        if base_url.endswith("/v1"):
+            return base_url[:-3]
+        return base_url
 
-    def _to_data_url(self, image_path: Path) -> str:
-        mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
-        encoded = base64.b64encode(image_path.read_bytes()).decode("utf-8")
-        return f"data:{mime_type};base64,{encoded}"
+    def _extract_content(self, payload: dict) -> str:
+        message = payload.get("message", {})
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            fragments = [item.get("text", "") for item in content if isinstance(item, dict)]
+            return "\n".join(fragment for fragment in fragments if fragment)
+        return str(content)
 
     def _parse_content(self, content: str) -> dict:
         cleaned = content.strip()

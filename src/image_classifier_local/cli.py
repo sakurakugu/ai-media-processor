@@ -4,9 +4,17 @@ import argparse
 from pathlib import Path
 
 from .backends.mock import MockClassifierBackend
+from .backends.ollama import OllamaBackend
 from .backends.openai_compatible import OpenAICompatibleBackend
 from .gui import launch
-from .models import BackendConfig, label_to_display_name
+from .models import (
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    BackendConfig,
+    label_to_display_name,
+)
 from .pipeline import classify_images, discover_images, export_results_csv, export_results_json
 
 
@@ -23,16 +31,16 @@ def build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument("inputs", nargs="+", help="图片文件或目录路径")
     cli_parser.add_argument(
         "--backend",
-        choices=["mock", "openai_compatible"],
+        choices=["mock", "ollama", "openai_compatible"],
         default="mock",
         help="后端类型，默认 mock",
     )
     cli_parser.add_argument(
         "--base-url",
-        default="http://127.0.0.1:8000/v1",
-        help="OpenAI 兼容服务地址",
+        default="",
+        help="后端服务地址；ollama 默认使用 http://127.0.0.1:11434",
     )
-    cli_parser.add_argument("--model", default="Qwen3.5-4B", help="模型名称")
+    cli_parser.add_argument("--model", default="", help="模型名称")
     cli_parser.add_argument("--api-key", default="", help="接口密钥")
     cli_parser.add_argument("--csv", default="", help="导出 CSV 路径")
     cli_parser.add_argument("--json", default="", help="导出 JSON 路径")
@@ -45,17 +53,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def create_backend(args) -> MockClassifierBackend | OpenAICompatibleBackend:
+def create_backend(args) -> MockClassifierBackend | OllamaBackend | OpenAICompatibleBackend:
     if args.backend == "mock":
         return MockClassifierBackend()
+    default_base_url = DEFAULT_OPENAI_BASE_URL
+    default_model = DEFAULT_OPENAI_MODEL
+    if args.backend == "ollama":
+        default_base_url = DEFAULT_OLLAMA_BASE_URL
+        default_model = DEFAULT_OLLAMA_MODEL
     config = BackendConfig(
-        backend_name="openai_compatible",
-        model=args.model.strip(),
-        base_url=args.base_url.strip(),
+        backend_name=args.backend,
+        model=args.model.strip() or default_model,
+        base_url=args.base_url.strip() or default_base_url,
         api_key=args.api_key.strip(),
     )
     if not config.base_url or not config.model:
-        raise ValueError("使用 openai_compatible 后端时，--base-url 和 --model 不能为空。")
+        raise ValueError("使用远程模型后端时，--base-url 和 --model 不能为空。")
+    if args.backend == "ollama":
+        return OllamaBackend(config)
     return OpenAICompatibleBackend(config)
 
 

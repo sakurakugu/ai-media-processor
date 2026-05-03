@@ -20,9 +20,10 @@
 - 英文原始标签
 - 中文标签说明
 
-当前提供两种后端：
+当前提供三种后端：
 
 - `mock`：无模型依赖，便于先验证 GUI 和批处理流程
+- `ollama`：直接连接本地 Ollama，适合当前这台 Windows 机器快速落地
 - `openai_compatible`：连接本地 OpenAI 兼容视觉服务，适合后续接 `Qwen3.5-4B` 或其他视觉模型
 
 ## 推荐路线
@@ -52,6 +53,7 @@ image-classifier-local/
       └─ backends/
          ├─ base.py
          ├─ mock.py
+         ├─ ollama.py
          └─ openai_compatible.py
 ```
 
@@ -61,9 +63,19 @@ image-classifier-local/
 
 ```powershell
 cd D:\elric\Code\image-classifier-local
-python -m venv .venv
-.venv\Scripts\Activate.ps1
+# python -m venv .venv
+# .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+```powershell
+# 拉取模型
+ollama pull qwen3.5:4b
+```
+
+```powershell
+# 启动模型并确认本地服务正常
+ollama run qwen3.5:4b
 ```
 
 ### 2. 运行 GUI
@@ -73,6 +85,12 @@ python app.py
 ```
 
 默认后端是 `mock`，不需要模型即可运行。
+
+如果你已经安装了 Ollama，GUI 顶部现在可以直接：
+
+- 选择 `本地 Ollama`
+- 点击 `连接本地 Ollama`
+- 点击 `测试连接`
 
 也可以用统一入口启动：
 
@@ -103,7 +121,7 @@ python main.py cli D:\images --json D:\images\result.json
 ### 接本地视觉模型服务
 
 ```powershell
-python main.py cli D:\images --backend openai_compatible --base-url http://127.0.0.1:8000/v1 --model Qwen3.5-4B --csv D:\images\result.csv
+python main.py cli D:\images --backend ollama --model qwen3.5:4b --csv D:\images\result.csv
 ```
 
 CLI 输出格式：
@@ -115,19 +133,20 @@ CLI 输出格式：
 
 ## 接入本地视觉模型
 
-这个项目不直接绑定某一个推理框架，当前通过 OpenAI 兼容接口接后端，目的是先把工具层稳定下来。
+这个项目不直接绑定某一个推理框架，当前既支持直接连接 Ollama，也支持通过 OpenAI 兼容接口接其他后端，目的是先把工具层稳定下来。
 
 你后续可以接：
 
+- 本地 `Ollama`
 - 本地 `vLLM` 服务
 - 本地 `SGLang` 服务
 - 其他支持 OpenAI 兼容 `/chat/completions` 的服务
 
 GUI 里要填的字段：
 
-- `Base URL`：例如 `http://127.0.0.1:8000/v1`
-- `Model`：例如 `Qwen3.5-4B`
-- `API Key`：本地服务通常可留空，某些服务要求填任意字符串
+- `Base URL`：Ollama 通常是 `http://127.0.0.1:11434`，OpenAI 兼容服务例如 `http://127.0.0.1:8000/v1`
+- `Model`：Ollama 例如 `qwen3.5:4b`，OpenAI 兼容服务例如 `Qwen/Qwen3.5-4B`
+- `API Key`：Ollama 可留空，某些 OpenAI 兼容服务要求填任意字符串
 
 本地服务接入文档见：`docs/qwen35_local_setup.md:1`
 
@@ -150,13 +169,3 @@ GUI 里要填的字段：
 - 原始响应
 
 支持 GUI 和 CLI 两种方式，并可导出为 `CSV` / `JSON`。
-
-## 下一步建议
-
-如果你继续让我做，优先级建议：
-
-1. 接 `Qwen3.5-4B` 的本地服务启动文档
-2. 增加批量目录递归扫描
-3. 增加结果缓存，避免重复分类
-4. 增加人工复核和错误重标
-5. 增加 OCR 和细分类

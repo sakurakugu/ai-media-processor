@@ -20,3 +20,6 @@ class MockClassifierBackend(BaseClassifierBackend):
             reason="mock backend result for GUI and batch flow validation",
             raw_response=digest,
         )
+
+    def test_connection(self) -> str:
+        return "模拟后端可用，无需连接远程服务。"

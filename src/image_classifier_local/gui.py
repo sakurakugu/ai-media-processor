@@ -9,13 +9,23 @@ import tkinter as tk
 from PIL import Image, ImageTk
 
 from .backends.mock import MockClassifierBackend
+from .backends.ollama import OllamaBackend
 from .backends.openai_compatible import OpenAICompatibleBackend
-from .models import BackendConfig, ClassificationResult, label_to_display_name
+from .models import (
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    BackendConfig,
+    ClassificationResult,
+    label_to_display_name,
+)
 from .pipeline import classify_images, discover_images, export_results_csv, export_results_json
 
 
 BACKEND_OPTIONS = {
     "模拟后端（无模型）": "mock",
+    "本地 Ollama": "ollama",
     "OpenAI兼容接口": "openai_compatible",
 }
 
@@ -31,8 +41,8 @@ class App:
         self.preview_image = None
         self.status_var = tk.StringVar(value="就绪")
         self.backend_var = tk.StringVar(value="模拟后端（无模型）")
-        self.base_url_var = tk.StringVar(value="http://127.0.0.1:8000/v1")
-        self.model_var = tk.StringVar(value="Qwen3.5-4B")
+        self.base_url_var = tk.StringVar(value=DEFAULT_OPENAI_BASE_URL)
+        self.model_var = tk.StringVar(value=DEFAULT_OPENAI_MODEL)
         self.api_key_var = tk.StringVar(value="")
         self.result_queue: queue.Queue = queue.Queue()
 
@@ -69,6 +79,13 @@ class App:
         ttk.Entry(top, textvariable=self.api_key_var, width=22, show="*").grid(
             row=0, column=7, sticky=W, padx=4, pady=4
         )
+
+        button_bar = ttk.Frame(top)
+        button_bar.grid(row=1, column=0, columnspan=8, sticky=W, padx=4, pady=(6, 0))
+        ttk.Button(button_bar, text="连接本地 Ollama", command=self.connect_local_ollama).pack(
+            side=LEFT, padx=(0, 8)
+        )
+        ttk.Button(button_bar, text="测试连接", command=self.test_connection).pack(side=LEFT)
 
         action_bar = ttk.Frame(container, padding=(0, 10))
         action_bar.pack(fill="x")
@@ -183,6 +200,25 @@ class App:
         export_results_json(self.results, Path(output))
         self.status_var.set(f"已导出 JSON：{output}")
 
+    def connect_local_ollama(self) -> None:
+        self.backend_var.set("本地 Ollama")
+        self.base_url_var.set(DEFAULT_OLLAMA_BASE_URL)
+        self.model_var.set(DEFAULT_OLLAMA_MODEL)
+        self.api_key_var.set("")
+        self.status_var.set("已填入本地 Ollama 默认配置。")
+
+    def test_connection(self) -> None:
+        try:
+            backend = self._create_backend()
+        except Exception as exc:
+            messagebox.showerror("配置错误", str(exc))
+            self.status_var.set(f"配置错误：{exc}")
+            return
+
+        self.status_var.set("正在测试后端连接…")
+        thread = threading.Thread(target=self._test_connection_worker, args=(backend,), daemon=True)
+        thread.start()
+
     def _run_classification(self, image_paths: list[Path]) -> None:
         backend = self._create_backend()
         self.status_var.set(f"正在分类，共 {len(image_paths)} 张图片…")
@@ -200,6 +236,13 @@ class App:
         except Exception as exc:
             self.result_queue.put(("error", str(exc)))
 
+    def _test_connection_worker(self, backend) -> None:
+        try:
+            message = backend.test_connection()
+            self.result_queue.put(("connection_ok", message))
+        except Exception as exc:
+            self.result_queue.put(("connection_error", str(exc)))
+
     def _poll_queue(self) -> None:
         try:
             while True:
@@ -209,6 +252,12 @@ class App:
                 elif message_type == "error":
                     self.status_var.set(f"错误：{payload}")
                     messagebox.showerror("分类失败", payload)
+                elif message_type == "connection_ok":
+                    self.status_var.set(payload)
+                    messagebox.showinfo("连接成功", payload)
+                elif message_type == "connection_error":
+                    self.status_var.set(f"连接失败：{payload}")
+                    messagebox.showerror("连接失败", payload)
         except queue.Empty:
             pass
         self.root.after(150, self._poll_queue)
@@ -248,7 +297,9 @@ class App:
             api_key=self.api_key_var.get().strip(),
         )
         if not config.base_url or not config.model:
-            raise ValueError("使用 OpenAI 兼容接口时，服务地址和模型名不能为空。")
+            raise ValueError("使用远程模型后端时，服务地址和模型名不能为空。")
+        if backend_name == "ollama":
+            return OllamaBackend(config)
         return OpenAICompatibleBackend(config)
 
     def _add_paths(self, paths: list[Path]) -> None:

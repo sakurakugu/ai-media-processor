@@ -13,6 +13,11 @@ ALLOWED_LABELS = [
     "other",
 ]
 
+DEFAULT_OPENAI_BASE_URL = "http://127.0.0.1:8000/v1"
+DEFAULT_OPENAI_MODEL = "Qwen3.5-4B"
+DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+DEFAULT_OLLAMA_MODEL = "qwen3.5:4b"
+
 
 LABEL_DISPLAY_NAMES = {
     "screenshot_text": "截图/文字图",
