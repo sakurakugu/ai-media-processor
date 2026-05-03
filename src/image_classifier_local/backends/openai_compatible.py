@@ -11,29 +11,30 @@ from .base import BaseClassifierBackend
 from ..models import ALLOWED_LABELS, BackendConfig, ClassificationResult
 
 
-SYSTEM_PROMPT = """You are an image classification engine.
-Classify the image into exactly one label from this closed set:
+SYSTEM_PROMPT = """你是一个图像分类引擎。
+请从下面的封闭标签集合中，且只能选一个标签：
 - screenshot_text
 - cosplay
 - anime_art
 - meme
 - other
 
-Definitions:
-- screenshot_text: screenshot, UI capture, document capture, chat screenshot, or text-heavy image.
-- cosplay: a real human dressed as a fictional character.
-- anime_art: anime image, manga-style illustration, non-photorealistic two-dimensional artwork.
-- meme: meme image, reaction image, internet joke image, or text-caption humor image.
-- other: anything unclear or not fitting the categories above.
+标签定义：
+- screenshot_text：截图、界面截屏、文档截图、聊天记录截图，或以文字内容为主的图片。
+- cosplay：真人扮演虚构角色的照片。
+- anime_art：动漫图片、漫画风插画、非写实的二维绘画作品。
+- meme：表情包、梗图、反应图，或带文字梗的幽默图片。
+- other：无法明确判断，或不属于以上任一类别。
 
-Return JSON only in this exact schema:
+只返回 JSON，且必须严格符合下面这个结构：
 {"label":"other","confidence":0.0,"reason":""}
 
-Rules:
-- label must be one of the five labels above.
-- confidence must be between 0 and 1.
-- if uncertain, use other.
-- do not return markdown.
+规则：
+- label 必须是上面五个英文标签之一，不能翻译成中文。
+- confidence 必须是 0 到 1 之间的数字。
+- reason 必须使用简体中文，简洁说明判断依据。
+- 如果不确定，使用 other。
+- 不要返回 markdown，不要返回额外说明文字。
 """
 
 
@@ -88,7 +89,7 @@ class OpenAICompatibleBackend(BaseClassifierBackend):
                     "content": [
                         {
                             "type": "text",
-                            "text": "Classify this image into one label and return JSON only.",
+                            "text": "请对这张图片进行分类，只返回 JSON。label 保持英文枚举值，reason 使用简体中文。",
                         },
                         {"type": "image_url", "image_url": {"url": image_url}},
                     ],

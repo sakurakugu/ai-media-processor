@@ -17,7 +17,7 @@ class MockClassifierBackend(BaseClassifierBackend):
             image_path=image_path,
             label=label,
             confidence=min(confidence, 0.99),
-            reason="mock backend result for GUI and batch flow validation",
+            reason="这是模拟后端生成的结果，用于验证界面和批处理流程。",
             raw_response=digest,
         )
 
