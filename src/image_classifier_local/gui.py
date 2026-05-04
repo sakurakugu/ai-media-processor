@@ -6,7 +6,7 @@ from pathlib import Path
 from tkinter import BOTH, END, LEFT, RIGHT, VERTICAL, W, filedialog, messagebox, ttk
 import tkinter as tk
 
-from PIL import Image, ImageTk
+from PIL import ImageTk
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -17,6 +17,7 @@ except ImportError:
 from .backends.mock import MockClassifierBackend
 from .backends.ollama import OllamaBackend
 from .backends.openai_compatible import OpenAICompatibleBackend
+from .image_support import load_image_copy
 from .models import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
@@ -709,7 +710,7 @@ class App:
 
     def _show_preview(self, image_path: Path) -> None:
         try:
-            image = Image.open(image_path)
+            image = load_image_copy(image_path)
             image.thumbnail((420, 320))
             preview_image = ImageTk.PhotoImage(image)
             self.preview_image = preview_image

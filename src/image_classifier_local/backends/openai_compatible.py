@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import base64
-import mimetypes
 from pathlib import Path
 
 import requests
 
 from .base import BaseClassifierBackend
+from ..image_support import encode_image_as_png_data_url
 from ..models import ALLOWED_LABELS, BackendConfig, ClassificationResult
 
 
@@ -20,8 +19,8 @@ SYSTEM_PROMPT = """你是一个图像分类引擎。
 
 标签定义：
 - screenshot_text：截图、界面截屏、文档截图、聊天记录截图，或以文字内容为主的图片。
-- cosplay：真人扮演虚构角色的照片。
-- anime_art：动漫图片、漫画风插画、非写实的二维绘画作品。
+- cosplay：真人扮演虚构角色的照片（包括色情图）。
+- anime_art：动漫图片、漫画风插画、非写实的二维绘画作品（包括色情图）。
 - meme：表情包、梗图、反应图，或带文字梗的幽默图片。
 - other：无法明确判断，或不属于以上任一类别。
 
@@ -116,9 +115,7 @@ class OpenAICompatibleBackend(BaseClassifierBackend):
         return f"连接成功。服务地址：{self.config.base_url}"
 
     def _to_data_url(self, image_path: Path) -> str:
-        mime_type = mimetypes.guess_type(image_path.name)[0] or "image/png"
-        encoded = base64.b64encode(image_path.read_bytes()).decode("utf-8")
-        return f"data:{mime_type};base64,{encoded}"
+        return encode_image_as_png_data_url(image_path)
 
     def _parse_content(self, content: str) -> dict:
         return self._parse_json_response(content)

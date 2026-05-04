@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import base64
-import io
 from pathlib import Path
 
 import requests
-from PIL import Image, UnidentifiedImageError
+from PIL import UnidentifiedImageError
 
 from .base import BaseClassifierBackend
+from ..image_support import encode_image_as_png_bytes
 from ..models import ALLOWED_LABELS, BackendConfig, ClassificationResult, InvalidImageFileError
 
 
@@ -21,8 +21,8 @@ SYSTEM_PROMPT = """你是一个图像分类引擎。
 
 标签定义：
 - screenshot_text：截图、界面截屏、文档截图、聊天记录截图，或以文字内容为主的图片。
-- cosplay：真人扮演虚构角色的照片。
-- anime_art：动漫图片、漫画风插画、非写实的二维绘画作品。
+- cosplay：真人扮演虚构角色的照片（包括色情图）。
+- anime_art：动漫图片、漫画风插画、非写实的二维绘画作品（包括色情图）。
 - meme：表情包、梗图、反应图，或带文字梗的幽默图片。
 - other：无法明确判断，或不属于以上任一类别。
 
@@ -127,24 +127,13 @@ class OllamaBackend(BaseClassifierBackend):
 
     def _encode_image(self, image_path: Path) -> str:
         try:
-            with Image.open(image_path) as opened_image:
-                opened_image.load()
-                image: Image.Image = opened_image.copy()
-                width = max(image.width, 32)
-                height = max(image.height, 32)
-                if (width, height) != image.size:
-                    image = image.resize((width, height))
-                if image.mode not in {"RGB", "RGBA"}:
-                    image = image.convert("RGBA")
-
-                buffer = io.BytesIO()
-                image.save(buffer, format="PNG")
+            payload = encode_image_as_png_bytes(image_path)
         except UnidentifiedImageError as exc:
             raise InvalidImageFileError(f"已跳过，图片无法识别或已损坏：{image_path}") from exc
         except OSError as exc:
             raise InvalidImageFileError(f"已跳过，图片读取失败：{image_path}；{exc}") from exc
 
-        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+        return base64.b64encode(payload).decode("utf-8")
 
     def _build_http_error_message(self, exc: requests.HTTPError, image_path: Path) -> str:
         response = exc.response

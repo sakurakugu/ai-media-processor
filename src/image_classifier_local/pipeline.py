@@ -6,9 +6,10 @@ import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
-from PIL import Image, UnidentifiedImageError
+from PIL import UnidentifiedImageError
 
 from .backends.base import BaseClassifierBackend
+from .image_support import is_supported_image_file, load_image_copy
 from .models import (
     ClassificationResult,
     InvalidImageFileError,
@@ -18,9 +19,6 @@ from .models import (
 )
 
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
-
-
 class ClassificationCancelled(Exception):
     pass
 
@@ -28,13 +26,13 @@ class ClassificationCancelled(Exception):
 def discover_images(paths: Iterable[Path], recursive: bool = True) -> list[Path]:
     discovered: list[Path] = []
     for path in paths:
-        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES:
+        if path.is_file() and is_supported_image_file(path):
             discovered.append(path)
             continue
         if path.is_dir():
             candidates = path.rglob("*") if recursive else path.iterdir()
             for candidate in candidates:
-                if candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES:
+                if candidate.is_file() and is_supported_image_file(candidate):
                     discovered.append(candidate)
     return sorted(set(discovered))
 
@@ -209,12 +207,13 @@ def _dedupe_target_path(target_path: Path, source_path: Path) -> Path:
 
 
 def _validate_image_file(image_path: Path) -> None:
-    if image_path.suffix.lower() not in IMAGE_SUFFIXES:
-        raise InvalidImageFileError(f"已跳过，文件扩展名不是受支持的图片格式：{image_path.suffix}")
+    if not is_supported_image_file(image_path):
+        raise InvalidImageFileError("已跳过，文件既不是受支持的图片扩展名，也没有可识别的图片文件头。")
 
     try:
-        with Image.open(image_path) as image:
-            image.verify()
+        image = load_image_copy(image_path)
+        if image.width <= 0 or image.height <= 0:
+            raise InvalidImageFileError("已跳过，图片尺寸无效。")
     except UnidentifiedImageError as exc:
         raise InvalidImageFileError("已跳过，文件内容不是有效图片。") from exc
     except OSError as exc:
