@@ -20,12 +20,15 @@ from .backends.openai_compatible import OpenAICompatibleBackend
 from .models import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_MODEL,
-    DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OPENAI_MODEL,
     BackendConfig,
     ClassificationResult,
     SkippedImage,
     label_to_display_name,
+)
+from .ollama_service import (
+    ensure_ollama_model_state,
+    ensure_ollama_service_started,
+    is_ollama_model_loaded,
 )
 from .pipeline import (
     ClassificationCancelled,
@@ -34,7 +37,6 @@ from .pipeline import (
     export_results_csv_with_skips,
     export_results_json_with_skips,
     move_results_to_label_folders,
-    move_skipped_items_to_folder,
 )
 
 
@@ -55,20 +57,27 @@ class App:
         self.results: list[ClassificationResult] = []
         self.skipped_items: list[SkippedImage] = []
         self.result_tree_rows: dict[Path, str] = {}
-        self.preview_image = None
+        self.preview_image: ImageTk.PhotoImage | None = None
         self.is_classifying = False
         self.stop_requested = False
+        self.is_starting_ollama = False
+        self.is_toggling_ollama_model = False
+        self.is_refreshing_ollama_model = False
         self.skipped_count = 0
         self.cancel_event = threading.Event()
         self.status_var = tk.StringVar(value="就绪")
         self.backend_var = tk.StringVar(value="本地 Ollama")
         self.base_url_var = tk.StringVar(value=DEFAULT_OLLAMA_BASE_URL)
         self.model_var = tk.StringVar(value=DEFAULT_OLLAMA_MODEL)
+        self.toggle_model_button_text = tk.StringVar(value="开启模型")
         self.api_key_var = tk.StringVar(value="")
         self.recursive_scan_var = tk.BooleanVar(value=True)
         self.result_queue: queue.Queue = queue.Queue()
 
         self._build_layout()
+        self.model_var.trace_add("write", self._on_ollama_config_changed)
+        self.base_url_var.trace_add("write", self._on_ollama_config_changed)
+        self.root.after(300, self.refresh_ollama_model_button_state)
         self.root.after(150, self._poll_queue)
 
     def _build_layout(self) -> None:
@@ -108,6 +117,18 @@ class App:
         ttk.Button(button_bar, text="连接本地 Ollama", command=self.connect_local_ollama).pack(
             side=LEFT, padx=(0, 8)
         )
+        self.start_ollama_button = ttk.Button(
+            button_bar,
+            text="启动 Ollama",
+            command=self.start_local_ollama,
+        )
+        self.start_ollama_button.pack(side=LEFT, padx=(0, 8))
+        self.toggle_model_button = ttk.Button(
+            button_bar,
+            textvariable=self.toggle_model_button_text,
+            command=self.toggle_ollama_model,
+        )
+        self.toggle_model_button.pack(side=LEFT, padx=(0, 8))
         ttk.Button(button_bar, text="测试连接", command=self.test_connection).pack(side=LEFT)
 
         action_bar = ttk.Frame(container, padding=(0, 10))
@@ -307,18 +328,16 @@ class App:
         self.status_var.set(f"已导出 JSON：{output}")
 
     def move_classified_images(self) -> None:
-        if not self.results and not self.skipped_items:
-            messagebox.showinfo("提示", "当前没有可移动的分类结果或跳过文件。")
+        if not self.results:
+            messagebox.showinfo("提示", "当前没有可移动的分类结果。")
             return
         output_dir = filedialog.askdirectory(title="选择分类输出文件夹")
         if not output_dir:
             return
 
         old_results = list(self.results)
-        old_skipped_items = list(self.skipped_items)
         try:
             new_results = move_results_to_label_folders(old_results, Path(output_dir))
-            new_skipped_items = move_skipped_items_to_folder(old_skipped_items, Path(output_dir))
         except Exception as exc:
             self.status_var.set(f"移动失败：{exc}")
             messagebox.showerror("移动失败", str(exc))
@@ -328,30 +347,76 @@ class App:
             old_result.image_path: new_result.image_path
             for old_result, new_result in zip(old_results, new_results)
         }
-        path_remap.update(
-            {
-                old_item.image_path: new_item.image_path
-                for old_item, new_item in zip(old_skipped_items, new_skipped_items)
-            }
-        )
         self.results = new_results
-        self.skipped_items = new_skipped_items
         self.items = sorted(path_remap.get(path, path) for path in self.items)
         self._refresh_file_list()
         self._refresh_result_tree()
         self._refresh_skipped_text()
         self.reason_text.delete("1.0", END)
         self.preview_label.configure(image="", text="未选择图片")
-        self.status_var.set(
-            f"已移动 {len(new_results)} 张分类图片，{len(new_skipped_items)} 个跳过文件到：{output_dir}"
-        )
+        self.status_var.set(f"已移动 {len(new_results)} 张分类图片到：{output_dir}；跳过文件保留原位置")
 
     def connect_local_ollama(self) -> None:
         self.backend_var.set("本地 Ollama")
         self.base_url_var.set(DEFAULT_OLLAMA_BASE_URL)
         self.model_var.set(DEFAULT_OLLAMA_MODEL)
         self.api_key_var.set("")
+        self.toggle_model_button_text.set("开启模型")
         self.status_var.set("已填入本地 Ollama 默认配置。")
+        self.refresh_ollama_model_button_state()
+
+    def start_local_ollama(self) -> None:
+        if self.is_starting_ollama:
+            return
+        self.is_starting_ollama = True
+        self.start_ollama_button.configure(state="disabled")
+        base_url = self.base_url_var.get().strip() or DEFAULT_OLLAMA_BASE_URL
+        self.status_var.set("正在检查 Ollama 服务…")
+        thread = threading.Thread(
+            target=self._start_local_ollama_worker,
+            args=(base_url,),
+            daemon=True,
+        )
+        thread.start()
+
+    def toggle_ollama_model(self) -> None:
+        if self.is_toggling_ollama_model:
+            return
+        model = self.model_var.get().strip()
+        if not model:
+            messagebox.showerror("配置错误", "请先填写模型名。")
+            self.status_var.set("配置错误：模型名不能为空。")
+            return
+        base_url = self.base_url_var.get().strip() or DEFAULT_OLLAMA_BASE_URL
+        should_load = not is_ollama_model_loaded(base_url, model)
+        self.is_toggling_ollama_model = True
+        self.toggle_model_button.configure(state="disabled")
+        self.status_var.set(f"正在{'启动' if should_load else '关闭'}模型：{model}…")
+        thread = threading.Thread(
+            target=self._toggle_ollama_model_worker,
+            args=(base_url, model, should_load),
+            daemon=True,
+        )
+        thread.start()
+
+    def refresh_ollama_model_button_state(self) -> None:
+        if self.is_refreshing_ollama_model or self.is_toggling_ollama_model:
+            return
+        if BACKEND_OPTIONS.get(self.backend_var.get(), "mock") != "ollama":
+            self.toggle_model_button_text.set("开启模型")
+            return
+        model = self.model_var.get().strip()
+        if not model:
+            self.toggle_model_button_text.set("开启模型")
+            return
+        base_url = self.base_url_var.get().strip() or DEFAULT_OLLAMA_BASE_URL
+        self.is_refreshing_ollama_model = True
+        thread = threading.Thread(
+            target=self._refresh_ollama_model_state_worker,
+            args=(base_url, model),
+            daemon=True,
+        )
+        thread.start()
 
     def test_connection(self) -> None:
         try:
@@ -437,6 +502,26 @@ class App:
         except Exception as exc:
             self.result_queue.put(("connection_error", str(exc)))
 
+    def _start_local_ollama_worker(self, base_url: str) -> None:
+        try:
+            message = ensure_ollama_service_started(base_url)
+            self.result_queue.put(("ollama_service_ok", message))
+        except Exception as exc:
+            self.result_queue.put(("ollama_service_error", str(exc)))
+
+    def _toggle_ollama_model_worker(self, base_url: str, model: str, should_load: bool) -> None:
+        try:
+            message = ensure_ollama_model_state(base_url, model, should_load)
+            self.result_queue.put(("ollama_model_ok", (message, should_load)))
+        except Exception as exc:
+            self.result_queue.put(("ollama_model_error", str(exc)))
+
+    def _refresh_ollama_model_state_worker(self, base_url: str, model: str) -> None:
+        try:
+            self.result_queue.put(("ollama_model_state", is_ollama_model_loaded(base_url, model)))
+        except Exception:
+            self.result_queue.put(("ollama_model_state", False))
+
     def _poll_queue(self) -> None:
         try:
             while True:
@@ -479,6 +564,29 @@ class App:
                 elif message_type == "connection_error":
                     self.status_var.set(f"连接失败：{payload}")
                     messagebox.showerror("连接失败", payload)
+                elif message_type == "ollama_service_ok":
+                    self._finish_ollama_start()
+                    self.status_var.set(payload)
+                    self.refresh_ollama_model_button_state()
+                    messagebox.showinfo("启动成功", payload)
+                elif message_type == "ollama_service_error":
+                    self._finish_ollama_start()
+                    self.status_var.set(f"Ollama 启动失败：{payload}")
+                    messagebox.showerror("启动失败", payload)
+                elif message_type == "ollama_model_ok":
+                    message, should_load = payload
+                    self._finish_ollama_model_toggle(should_load)
+                    self.status_var.set(message)
+                    self.refresh_ollama_model_button_state()
+                    messagebox.showinfo("模型状态已更新", message)
+                elif message_type == "ollama_model_error":
+                    self._finish_ollama_model_toggle()
+                    self.status_var.set(f"模型状态切换失败：{payload}")
+                    self.refresh_ollama_model_button_state()
+                    messagebox.showerror("模型状态切换失败", payload)
+                elif message_type == "ollama_model_state":
+                    self.is_refreshing_ollama_model = False
+                    self.toggle_model_button_text.set("关闭模型" if payload else "开启模型")
         except queue.Empty:
             pass
         self.root.after(150, self._poll_queue)
@@ -535,6 +643,22 @@ class App:
         self.cancel_event.clear()
         self._set_classification_controls(enabled=True)
 
+    def _finish_ollama_start(self) -> None:
+        self.is_starting_ollama = False
+        self.start_ollama_button.configure(state="normal")
+
+    def _finish_ollama_model_toggle(self, should_load: bool | None = None) -> None:
+        self.is_toggling_ollama_model = False
+        self.toggle_model_button.configure(state="normal")
+        if should_load is True:
+            self.toggle_model_button_text.set("关闭模型")
+        elif should_load is False:
+            self.toggle_model_button_text.set("开启模型")
+
+    def _on_ollama_config_changed(self, *_args) -> None:
+        self.toggle_model_button_text.set("开启模型")
+        self.refresh_ollama_model_button_state()
+
     def _create_backend(self):
         backend_name = BACKEND_OPTIONS.get(self.backend_var.get(), "mock")
         if backend_name == "mock":
@@ -587,8 +711,9 @@ class App:
         try:
             image = Image.open(image_path)
             image.thumbnail((420, 320))
-            self.preview_image = ImageTk.PhotoImage(image)
-            self.preview_label.configure(image=self.preview_image, text="")
+            preview_image = ImageTk.PhotoImage(image)
+            self.preview_image = preview_image
+            self.preview_label.configure(image=preview_image, text="")
         except Exception:
             self.preview_label.configure(image="", text=str(image_path))
 

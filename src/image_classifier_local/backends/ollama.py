@@ -127,8 +127,9 @@ class OllamaBackend(BaseClassifierBackend):
 
     def _encode_image(self, image_path: Path) -> str:
         try:
-            with Image.open(image_path) as image:
-                image.load()
+            with Image.open(image_path) as opened_image:
+                opened_image.load()
+                image: Image.Image = opened_image.copy()
                 width = max(image.width, 32)
                 height = max(image.height, 32)
                 if (width, height) != image.size:
