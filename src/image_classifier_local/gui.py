@@ -8,6 +8,12 @@ import tkinter as tk
 
 from PIL import Image, ImageTk
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
+
 from .backends.mock import MockClassifierBackend
 from .backends.ollama import OllamaBackend
 from .backends.openai_compatible import OpenAICompatibleBackend
@@ -28,6 +34,7 @@ from .pipeline import (
     export_results_csv_with_skips,
     export_results_json_with_skips,
     move_results_to_label_folders,
+    move_skipped_items_to_folder,
 )
 
 
@@ -65,6 +72,7 @@ class App:
         self.root.after(150, self._poll_queue)
 
     def _build_layout(self) -> None:
+        self._enable_drop_target(self.root)
         container = ttk.Frame(self.root, padding=10)
         container.pack(fill=BOTH, expand=True)
 
@@ -140,22 +148,47 @@ class App:
         body.add(left, weight=3)
         body.add(right, weight=2)
 
-        self.file_list = tk.Listbox(left, selectmode=tk.EXTENDED)
-        self.file_list.pack(fill=BOTH, expand=True)
+        file_list_frame = ttk.Frame(left)
+        file_list_frame.pack(fill=BOTH, expand=True)
+
+        file_list_scrollbar = ttk.Scrollbar(file_list_frame, orient=VERTICAL)
+        file_list_scrollbar.pack(side=RIGHT, fill="y")
+
+        self.file_list = tk.Listbox(
+            file_list_frame,
+            selectmode=tk.EXTENDED,
+            yscrollcommand=file_list_scrollbar.set,
+        )
+        self.file_list.pack(side=LEFT, fill=BOTH, expand=True)
+        file_list_scrollbar.configure(command=self.file_list.yview)
         self.file_list.bind("<<ListboxSelect>>", self._on_select_item)
+        self._enable_drop_target(self.file_list)
 
         result_frame = ttk.LabelFrame(right, text="分类结果", padding=8)
         result_frame.pack(fill=BOTH, expand=True)
 
         columns = ("path", "label", "confidence")
-        self.result_tree = ttk.Treeview(result_frame, columns=columns, show="headings", height=12)
+        result_tree_frame = ttk.Frame(result_frame)
+        result_tree_frame.pack(fill=BOTH, expand=True)
+
+        result_tree_scrollbar = ttk.Scrollbar(result_tree_frame, orient=VERTICAL)
+        result_tree_scrollbar.pack(side=RIGHT, fill="y")
+
+        self.result_tree = ttk.Treeview(
+            result_tree_frame,
+            columns=columns,
+            show="headings",
+            height=12,
+            yscrollcommand=result_tree_scrollbar.set,
+        )
         self.result_tree.heading("path", text="图片")
         self.result_tree.heading("label", text="标签")
         self.result_tree.heading("confidence", text="置信度")
         self.result_tree.column("path", width=360, anchor=W)
         self.result_tree.column("label", width=110, anchor=W)
         self.result_tree.column("confidence", width=90, anchor=W)
-        self.result_tree.pack(fill=BOTH, expand=True)
+        self.result_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        result_tree_scrollbar.configure(command=self.result_tree.yview)
         self.result_tree.bind("<<TreeviewSelect>>", self._on_select_result)
 
         detail_frame = ttk.LabelFrame(right, text="预览 / 详情", padding=8)
@@ -164,14 +197,39 @@ class App:
         self.preview_label = ttk.Label(detail_frame, text="未选择图片")
         self.preview_label.pack(fill="x")
 
-        self.reason_text = tk.Text(detail_frame, height=10, wrap="word")
-        self.reason_text.pack(fill=BOTH, expand=True, pady=(8, 0))
+        reason_frame = ttk.Frame(detail_frame)
+        reason_frame.pack(fill=BOTH, expand=True, pady=(8, 0))
+
+        reason_scrollbar = ttk.Scrollbar(reason_frame, orient=VERTICAL)
+        reason_scrollbar.pack(side=RIGHT, fill="y")
+
+        self.reason_text = tk.Text(
+            reason_frame,
+            height=10,
+            wrap="word",
+            yscrollcommand=reason_scrollbar.set,
+        )
+        self.reason_text.pack(side=LEFT, fill=BOTH, expand=True)
+        reason_scrollbar.configure(command=self.reason_text.yview)
 
         skipped_frame = ttk.LabelFrame(right, text="跳过文件", padding=8)
         skipped_frame.pack(fill=BOTH, expand=False, pady=(10, 0))
 
-        self.skipped_text = tk.Text(skipped_frame, height=7, wrap="word")
-        self.skipped_text.pack(fill=BOTH, expand=True)
+        skipped_text_frame = ttk.Frame(skipped_frame)
+        skipped_text_frame.pack(fill=BOTH, expand=True)
+
+        skipped_text_scrollbar = ttk.Scrollbar(skipped_text_frame, orient=VERTICAL)
+        skipped_text_scrollbar.pack(side=RIGHT, fill="y")
+
+        self.skipped_text = tk.Text(
+            skipped_text_frame,
+            height=7,
+            wrap="word",
+            yscrollcommand=skipped_text_scrollbar.set,
+        )
+        self.skipped_text.pack(side=LEFT, fill=BOTH, expand=True)
+        skipped_text_scrollbar.configure(command=self.skipped_text.yview)
+        self._enable_drop_target(self.skipped_text)
 
         status = ttk.Label(container, textvariable=self.status_var, anchor=W)
         status.pack(fill="x", pady=(10, 0))
@@ -249,16 +307,18 @@ class App:
         self.status_var.set(f"已导出 JSON：{output}")
 
     def move_classified_images(self) -> None:
-        if not self.results:
-            messagebox.showinfo("提示", "当前没有可移动的分类结果。")
+        if not self.results and not self.skipped_items:
+            messagebox.showinfo("提示", "当前没有可移动的分类结果或跳过文件。")
             return
         output_dir = filedialog.askdirectory(title="选择分类输出文件夹")
         if not output_dir:
             return
 
         old_results = list(self.results)
+        old_skipped_items = list(self.skipped_items)
         try:
             new_results = move_results_to_label_folders(old_results, Path(output_dir))
+            new_skipped_items = move_skipped_items_to_folder(old_skipped_items, Path(output_dir))
         except Exception as exc:
             self.status_var.set(f"移动失败：{exc}")
             messagebox.showerror("移动失败", str(exc))
@@ -268,13 +328,23 @@ class App:
             old_result.image_path: new_result.image_path
             for old_result, new_result in zip(old_results, new_results)
         }
+        path_remap.update(
+            {
+                old_item.image_path: new_item.image_path
+                for old_item, new_item in zip(old_skipped_items, new_skipped_items)
+            }
+        )
         self.results = new_results
+        self.skipped_items = new_skipped_items
         self.items = sorted(path_remap.get(path, path) for path in self.items)
         self._refresh_file_list()
         self._refresh_result_tree()
+        self._refresh_skipped_text()
         self.reason_text.delete("1.0", END)
         self.preview_label.configure(image="", text="未选择图片")
-        self.status_var.set(f"已按分类移动 {len(new_results)} 张图片到：{output_dir}")
+        self.status_var.set(
+            f"已移动 {len(new_results)} 张分类图片，{len(new_skipped_items)} 个跳过文件到：{output_dir}"
+        )
 
     def connect_local_ollama(self) -> None:
         self.backend_var.set("本地 Ollama")
@@ -526,8 +596,31 @@ class App:
         self.skipped_text.insert("end", f"{item.image_path}\n{item.reason}\n\n")
         self.skipped_text.see("end")
 
+    def _refresh_skipped_text(self) -> None:
+        self.skipped_text.delete("1.0", END)
+        for item in self.skipped_items:
+            self._append_skipped_item(item)
+
+    def _enable_drop_target(self, widget) -> None:
+        if DND_FILES is None or not hasattr(widget, "drop_target_register"):
+            return
+        widget.drop_target_register(DND_FILES)
+        widget.dnd_bind("<<Drop>>", self._on_drop_files)
+
+    def _on_drop_files(self, event) -> str:
+        dropped_items = [Path(item) for item in self.root.tk.splitlist(event.data) if item]
+        discovered = discover_images(dropped_items, recursive=self.recursive_scan_var.get())
+        if discovered:
+            self._add_paths(discovered)
+        else:
+            self.status_var.set("拖拽内容中未发现可处理的图片。")
+        return "break"
+
 
 def launch() -> None:
-    root = tk.Tk()
+    if TkinterDnD is not None:
+        root = TkinterDnD.Tk()
+    else:
+        root = tk.Tk()
     App(root)
     root.mainloop()

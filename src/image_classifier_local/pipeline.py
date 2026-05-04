@@ -162,6 +162,33 @@ def move_results_to_label_folders(
     return moved_results
 
 
+def move_skipped_items_to_folder(
+    skipped_items: list[SkippedImage],
+    output_dir: Path,
+    folder_name: str = "跳过文件",
+) -> list[SkippedImage]:
+    if not skipped_items:
+        return []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = output_dir / folder_name
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    moved_items: list[SkippedImage] = []
+    for item in skipped_items:
+        source_path = item.image_path
+        target_path = target_dir / source_path.name
+        if source_path.resolve() != target_path.resolve():
+            target_path = _dedupe_target_path(target_path, source_path)
+            shutil.move(str(source_path), str(target_path))
+        moved_items.append(
+            SkippedImage(
+                image_path=target_path,
+                reason=item.reason,
+            )
+        )
+    return moved_items
+
+
 def _dedupe_target_path(target_path: Path, source_path: Path) -> Path:
     if not target_path.exists():
         return target_path
