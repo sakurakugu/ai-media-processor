@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import subprocess
 import shutil
 from pathlib import Path
 from typing import Callable, Iterable
@@ -12,10 +13,19 @@ from .backends.base import BaseClassifierBackend
 from .image_support import is_supported_image_file, load_image_copy
 from .models import (
     ClassificationResult,
+    DEFAULT_VIDEO_FRAME_COUNT,
     InvalidImageFileError,
     SkippedImage,
+    VideoFrameClassification,
     label_to_display_name,
     label_to_folder_name,
+)
+from .video_support import (
+    cleanup_extracted_frames,
+    discover_media_files,
+    extract_video_frames,
+    is_supported_video_file,
+    merge_video_frame_results,
 )
 
 
@@ -24,17 +34,11 @@ class ClassificationCancelled(Exception):
 
 
 def discover_images(paths: Iterable[Path], recursive: bool = True) -> list[Path]:
-    discovered: list[Path] = []
-    for path in paths:
-        if path.is_file() and is_supported_image_file(path):
-            discovered.append(path)
-            continue
-        if path.is_dir():
-            candidates = path.rglob("*") if recursive else path.iterdir()
-            for candidate in candidates:
-                if candidate.is_file() and is_supported_image_file(candidate):
-                    discovered.append(candidate)
-    return sorted(set(discovered))
+    return [path for path in discover_media_files(list(paths), recursive=recursive) if is_supported_image_file(path)]
+
+
+def discover_inputs(paths: Iterable[Path], recursive: bool = True) -> list[Path]:
+    return discover_media_files(list(paths), recursive=recursive)
 
 
 def classify_images(
@@ -44,18 +48,42 @@ def classify_images(
     on_skip: Callable[[SkippedImage, int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[ClassificationResult]:
-    image_list = list(image_paths)
-    total = len(image_list)
+    return classify_media_files(
+        backend,
+        image_paths,
+        on_result=on_result,
+        on_skip=on_skip,
+        should_stop=should_stop,
+    )
+
+
+def classify_media_files(
+    backend: BaseClassifierBackend,
+    media_paths: Iterable[Path],
+    on_result: Callable[[ClassificationResult, int, int], None] | None = None,
+    on_skip: Callable[[SkippedImage, int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    video_frame_count: int = DEFAULT_VIDEO_FRAME_COUNT,
+) -> list[ClassificationResult]:
+    media_list = list(media_paths)
+    total = len(media_list)
     results: list[ClassificationResult] = []
-    for index, image_path in enumerate(image_list, start=1):
+    for index, media_path in enumerate(media_list, start=1):
         if should_stop is not None and should_stop():
             raise ClassificationCancelled(f"分类已停止，已完成 {len(results)}/{total} 张图片。")
         try:
-            _validate_image_file(image_path)
-            result = backend.classify(image_path)
+            if is_supported_video_file(media_path):
+                result = _classify_video_file(
+                    backend,
+                    media_path,
+                    video_frame_count=video_frame_count,
+                )
+            else:
+                _validate_image_file(media_path)
+                result = backend.classify(media_path)
         except InvalidImageFileError as exc:
             if on_skip is not None:
-                on_skip(SkippedImage(image_path=image_path, reason=str(exc)), index, total)
+                on_skip(SkippedImage(image_path=media_path, reason=str(exc)), index, total)
             continue
         results.append(result)
         if on_result is not None:
@@ -218,3 +246,40 @@ def _validate_image_file(image_path: Path) -> None:
         raise InvalidImageFileError("已跳过，文件内容不是有效图片。") from exc
     except OSError as exc:
         raise InvalidImageFileError(f"已跳过，图片文件损坏或无法读取：{exc}") from exc
+
+
+def _classify_video_file(
+    backend: BaseClassifierBackend,
+    video_path: Path,
+    video_frame_count: int,
+) -> ClassificationResult:
+    if not is_supported_video_file(video_path):
+        raise InvalidImageFileError("已跳过，不是受支持的视频格式。")
+
+    try:
+        extracted_frames = extract_video_frames(video_path, video_frame_count)
+    except subprocess.CalledProcessError as exc:
+        raise InvalidImageFileError(f"已跳过，视频抽帧失败：{video_path.name}；{exc}") from exc
+    except OSError as exc:
+        raise InvalidImageFileError(f"已跳过，视频无法读取：{video_path.name}；{exc}") from exc
+    except RuntimeError as exc:
+        raise InvalidImageFileError(f"已跳过，视频处理失败：{video_path.name}；{exc}") from exc
+
+    frame_results: list[VideoFrameClassification] = []
+    try:
+        for frame_index, timestamp_seconds, frame_path in extracted_frames:
+            _validate_image_file(frame_path)
+            result = backend.classify(frame_path)
+            frame_results.append(
+                VideoFrameClassification(
+                    frame_index=frame_index,
+                    timestamp_seconds=timestamp_seconds,
+                    result=result,
+                )
+            )
+    except InvalidImageFileError as exc:
+        raise InvalidImageFileError(f"已跳过，视频抽出的帧无法识别：{video_path.name}；{exc}") from exc
+    finally:
+        cleanup_extracted_frames(extracted_frames)
+
+    return merge_video_frame_results(video_path, frame_results)

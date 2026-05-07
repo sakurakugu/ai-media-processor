@@ -23,6 +23,7 @@ from .models import (
     DEFAULT_OLLAMA_MODEL,
     BackendConfig,
     ClassificationResult,
+    DEFAULT_VIDEO_FRAME_COUNT,
     SkippedImage,
     label_to_display_name,
 )
@@ -33,12 +34,13 @@ from .ollama_service import (
 )
 from .pipeline import (
     ClassificationCancelled,
-    classify_images,
-    discover_images,
+    classify_media_files,
+    discover_inputs,
     export_results_csv_with_skips,
     export_results_json_with_skips,
     move_results_to_label_folders,
 )
+from .video_support import is_supported_video_file
 
 
 BACKEND_OPTIONS = {
@@ -73,6 +75,7 @@ class App:
         self.toggle_model_button_text = tk.StringVar(value="开启模型")
         self.api_key_var = tk.StringVar(value="")
         self.recursive_scan_var = tk.BooleanVar(value=True)
+        self.video_frame_count_var = tk.IntVar(value=DEFAULT_VIDEO_FRAME_COUNT)
         self.result_queue: queue.Queue = queue.Queue()
 
         self._build_layout()
@@ -144,6 +147,14 @@ class App:
             text="递归子目录",
             variable=self.recursive_scan_var,
         ).pack(side=LEFT, padx=(4, 12))
+        ttk.Label(action_bar, text="视频抽帧数").pack(side=LEFT, padx=(4, 4))
+        ttk.Spinbox(
+            action_bar,
+            from_=1,
+            to=20,
+            textvariable=self.video_frame_count_var,
+            width=5,
+        ).pack(side=LEFT, padx=(0, 12))
         self.clear_button = ttk.Button(action_bar, text="清空", command=self.clear_items)
         self.clear_button.pack(side=LEFT, padx=4)
         self.classify_selected_button = ttk.Button(
@@ -258,16 +269,18 @@ class App:
 
     def add_files(self) -> None:
         paths = filedialog.askopenfilenames(
-            title="选择图片",
-            filetypes=[("Images", "*.png *.jpg *.jpeg *.webp *.bmp *.gif")],
+            title="选择图片或视频",
+            filetypes=[
+                ("Media", "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.heic *.heif *.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
+            ],
         )
-        self._add_paths([Path(path) for path in paths])
+        self._add_paths(discover_inputs([Path(path) for path in paths], recursive=False))
 
     def add_folder(self) -> None:
         folder = filedialog.askdirectory(title="选择文件夹")
         if folder:
             self._add_paths(
-                discover_images([Path(folder)], recursive=self.recursive_scan_var.get())
+                discover_inputs([Path(folder)], recursive=self.recursive_scan_var.get())
             )
 
     def clear_items(self) -> None:
@@ -289,14 +302,14 @@ class App:
     def classify_selected(self) -> None:
         selected = self.file_list.curselection()
         if not selected:
-            messagebox.showinfo("提示", "请先选择至少一张图片。")
+            messagebox.showinfo("提示", "请先选择至少一个文件。")
             return
         paths = [self.items[index] for index in selected]
         self._run_classification(paths)
 
     def classify_all(self) -> None:
         if not self.items:
-            messagebox.showinfo("提示", "请先添加图片。")
+            messagebox.showinfo("提示", "请先添加图片或视频。")
             return
         self._run_classification(self.items)
 
@@ -449,22 +462,23 @@ class App:
         self._set_classification_controls(enabled=False)
         image_paths = list(image_paths)
         self.skipped_text.delete("1.0", END)
-        self.status_var.set(f"正在分类，共 {len(image_paths)} 张图片…")
+        self.status_var.set(f"正在分类，共 {len(image_paths)} 个媒体文件…")
         thread = threading.Thread(
             target=self._classify_worker,
-            args=(backend, image_paths),
+            args=(backend, image_paths, self.video_frame_count_var.get()),
             daemon=True,
         )
         thread.start()
 
-    def _classify_worker(self, backend, image_paths: list[Path]) -> None:
+    def _classify_worker(self, backend, image_paths: list[Path], video_frame_count: int) -> None:
         try:
-            results = classify_images(
+            results = classify_media_files(
                 backend,
                 image_paths,
                 on_result=self._queue_progress_result,
                 on_skip=self._queue_skipped_item,
                 should_stop=self.cancel_event.is_set,
+                video_frame_count=video_frame_count,
             )
             self.result_queue.put(("classification_done", len(results)))
         except ClassificationCancelled as exc:
@@ -549,7 +563,7 @@ class App:
                 elif message_type == "classification_done":
                     self._finish_classification()
                     self.status_var.set(
-                        f"分类完成，本次处理 {payload} 张图片，跳过 {self.skipped_count} 个文件。"
+                        f"分类完成，本次处理 {payload} 个媒体文件，跳过 {self.skipped_count} 个文件。"
                     )
                 elif message_type == "classification_cancelled":
                     self._finish_classification()
@@ -680,7 +694,7 @@ class App:
         merged = sorted(set(self.items).union(paths))
         self.items = merged
         self._refresh_file_list()
-        self.status_var.set(f"已加载 {len(self.items)} 张图片。")
+        self.status_var.set(f"已加载 {len(self.items)} 个媒体文件。")
 
     def _refresh_file_list(self) -> None:
         self.file_list.delete(0, END)
@@ -709,6 +723,9 @@ class App:
             )
 
     def _show_preview(self, image_path: Path) -> None:
+        if is_supported_video_file(image_path):
+            self.preview_label.configure(image="", text=f"视频文件：{image_path.name}")
+            return
         try:
             image = load_image_copy(image_path)
             image.thumbnail((420, 320))
@@ -735,11 +752,11 @@ class App:
 
     def _on_drop_files(self, event) -> str:
         dropped_items = [Path(item) for item in self.root.tk.splitlist(event.data) if item]
-        discovered = discover_images(dropped_items, recursive=self.recursive_scan_var.get())
+        discovered = discover_inputs(dropped_items, recursive=self.recursive_scan_var.get())
         if discovered:
             self._add_paths(discovered)
         else:
-            self.status_var.set("拖拽内容中未发现可处理的图片。")
+            self.status_var.set("拖拽内容中未发现可处理的图片或视频。")
         return "break"
 
 

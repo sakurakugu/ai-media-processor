@@ -17,6 +17,7 @@ DEFAULT_OPENAI_BASE_URL = "http://127.0.0.1:8000/v1"
 DEFAULT_OPENAI_MODEL = "Qwen3.5-4B"
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3.5:4b"
+DEFAULT_VIDEO_FRAME_COUNT = 5
 
 
 LABEL_DISPLAY_NAMES = {
@@ -51,6 +52,14 @@ class ClassificationResult:
     confidence: float
     reason: str = ""
     raw_response: str = ""
+    source_kind: str = "image"
+
+
+@dataclass(slots=True)
+class VideoFrameClassification:
+    frame_index: int
+    timestamp_seconds: float
+    result: ClassificationResult
 
 
 @dataclass(slots=True)

@@ -1,8 +1,8 @@
 # Local Image Classifier
 
-一个本地图片分类小工具的最小骨架，当前目标是先把流程跑通：
+一个本地图片/视频分类小工具的最小骨架，当前目标是先把流程跑通：
 
-- 选择单张图片或一个目录
+- 选择单张图片、单个视频或一个目录
 - 按固定类别分类
 - 在桌面 GUI 里查看结果
 - 后续再接 OCR、细分类、梗图拆分等能力
@@ -28,7 +28,9 @@
 - `BMP`
 - `GIF`
 - `HEIC / HEIF`
+- `MP4 / MOV / MKV / AVI / WEBM / M4V`
 - 对扩展名错误但文件头可识别的图片，也会自动纳入处理
+- 视频会先抽帧，再按帧分类并投票得到最终标签
 
 当前提供三种后端：
 
@@ -105,7 +107,8 @@ python app.py
 - 点击 `开启模型` / `关闭模型`，可把当前填写的模型载入或卸载出内存
 - 点击 `测试连接`
 - 按需勾选 `递归子目录`
-- 也可以直接拖拽图片或文件夹到窗口里导入
+- 也可以直接拖拽图片、视频或文件夹到窗口里导入
+- 可设置“视频抽帧数”控制每个视频抽取多少帧参与分类
 
 也可以用统一入口启动：
 
@@ -145,9 +148,15 @@ python main.py cli D:\images --json D:\images\result.json
 python main.py cli D:\images --backend ollama --model qwen3.5:4b --csv D:\images\result.csv
 ```
 
+### 处理图片和视频混合目录
+
+```powershell
+python main.py cli D:\media --backend ollama --model qwen3.5:4b --video-frame-count 5 --json D:\media\result.json
+```
+
 CLI 输出格式：
 
-- 图片路径
+- 文件路径
 - 中文标签 + 英文标签
 - 置信度
 - 原因

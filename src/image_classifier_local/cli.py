@@ -13,10 +13,11 @@ from .models import (
     DEFAULT_OPENAI_BASE_URL,
     DEFAULT_OPENAI_MODEL,
     BackendConfig,
+    DEFAULT_VIDEO_FRAME_COUNT,
     SkippedImage,
     label_to_display_name,
 )
-from .pipeline import classify_images, discover_images
+from .pipeline import classify_media_files, discover_inputs
 from .pipeline import export_results_csv_with_skips, export_results_json_with_skips
 
 
@@ -30,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("gui", help="启动图形界面")
 
     cli_parser = subparsers.add_parser("cli", help="命令行批量分类")
-    cli_parser.add_argument("inputs", nargs="+", help="图片文件或目录路径")
+    cli_parser.add_argument("inputs", nargs="+", help="图片、视频文件或目录路径")
     cli_parser.add_argument(
         "--no-recursive",
         action="store_true",
@@ -51,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument("--api-key", default="", help="接口密钥")
     cli_parser.add_argument("--csv", default="", help="导出 CSV 路径")
     cli_parser.add_argument("--json", default="", help="导出 JSON 路径")
+    cli_parser.add_argument(
+        "--video-frame-count",
+        type=int,
+        default=DEFAULT_VIDEO_FRAME_COUNT,
+        help=f"视频分类时每个视频抽取的帧数，默认 {DEFAULT_VIDEO_FRAME_COUNT}",
+    )
     cli_parser.add_argument(
         "--fail-on-empty",
         action="store_true",
@@ -83,9 +90,9 @@ def create_backend(args) -> MockClassifierBackend | OllamaBackend | OpenAICompat
 
 def run_cli(args) -> int:
     inputs = [Path(item) for item in args.inputs]
-    image_paths = discover_images(inputs, recursive=not args.no_recursive)
-    if not image_paths:
-        print("未发现可处理的图片。")
+    media_paths = discover_inputs(inputs, recursive=not args.no_recursive)
+    if not media_paths:
+        print("未发现可处理的图片或视频。")
         return 2 if args.fail_on_empty else 0
 
     backend = create_backend(args)
@@ -95,7 +102,12 @@ def run_cli(args) -> int:
         skipped.append(item)
         print(f"跳过\t{item.image_path}\t{item.reason}")
 
-    results = classify_images(backend, image_paths, on_skip=on_skip)
+    results = classify_media_files(
+        backend,
+        media_paths,
+        on_skip=on_skip,
+        video_frame_count=args.video_frame_count,
+    )
 
     for result in results:
         print(
@@ -112,7 +124,7 @@ def run_cli(args) -> int:
         export_results_json_with_skips(results, skipped, output_path)
         print(f"\n已导出 JSON：{output_path}")
 
-    print(f"\n处理完成，共 {len(results)} 张图片，跳过 {len(skipped)} 个文件。")
+    print(f"\n处理完成，共 {len(results)} 个媒体文件，跳过 {len(skipped)} 个文件。")
     return 0
 
 
