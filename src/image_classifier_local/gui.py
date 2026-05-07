@@ -271,7 +271,7 @@ class App:
         paths = filedialog.askopenfilenames(
             title="选择图片或视频",
             filetypes=[
-                ("Media", "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.heic *.heif *.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
+                ("Media", "*.png *.jpg *.jpeg *.webp *.bmp *.gif *.heic *.heif *.avif *.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
             ],
         )
         self._add_paths(discover_inputs([Path(path) for path in paths], recursive=False))

@@ -3,19 +3,21 @@ from __future__ import annotations
 import base64
 import io
 from pathlib import Path
+from threading import Lock
 from typing import Final
 
-from PIL import Image
+from PIL import Image, ImageFile
 
 
 SUPPORTED_IMAGE_SUFFIXES: Final[frozenset[str]] = frozenset(
-    {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".heic", ".heif"}
+    {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".heic", ".heif", ".avif"}
 )
 HEIF_BRANDS: Final[frozenset[bytes]] = frozenset(
-    {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1"}
+    {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1", b"avif", b"avis"}
 )
 
 _heif_opener_registered = False
+_truncated_image_lock = Lock()
 
 
 def ensure_image_openers_registered() -> None:
@@ -61,9 +63,20 @@ def has_supported_image_signature(path: Path) -> bool:
 
 def load_image_copy(image_path: Path) -> Image.Image:
     ensure_image_openers_registered()
-    with Image.open(image_path) as opened_image:
-        opened_image.load()
-        return opened_image.copy()
+    try:
+        with Image.open(image_path) as opened_image:
+            opened_image.load()
+            return opened_image.copy()
+    except (OSError, Image.UnidentifiedImageError):
+        with _truncated_image_lock:
+            previous = ImageFile.LOAD_TRUNCATED_IMAGES
+            ImageFile.LOAD_TRUNCATED_IMAGES = True
+            try:
+                with Image.open(image_path) as opened_image:
+                    opened_image.load()
+                    return opened_image.copy()
+            finally:
+                ImageFile.LOAD_TRUNCATED_IMAGES = previous
 
 
 def encode_image_as_png_bytes(image_path: Path, minimum_edge: int = 32) -> bytes:
