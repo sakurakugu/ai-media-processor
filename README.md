@@ -1,6 +1,6 @@
-# Local Image Classifier
+# AI Media Processor
 
-一个本地图片/视频分类小工具的最小骨架，当前目标是先把流程跑通：
+一个本地 AI 图片/视频处理工具的最小骨架，当前目标是先把分类流程跑通：
 
 - 选择单张图片、单个视频或一个目录
 - 按固定类别分类
@@ -51,7 +51,7 @@
 ## 目录结构
 
 ```text
-image-classifier-local/
+ai-media-processor/
 ├─ app.py
 ├─ main.py
 ├─ requirements.txt
@@ -75,7 +75,7 @@ image-classifier-local/
 ### 1. 创建环境
 
 ```powershell
-cd D:\elric\Code\image-classifier-local
+cd D:\elric\Code\ai-media-processor
 # python -m venv .venv
 # .venv\Scripts\Activate.ps1
 pip install -r requirements.txt

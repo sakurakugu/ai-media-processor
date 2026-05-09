@@ -72,8 +72,8 @@ def add_batch_arguments(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="image-classifier-local",
-        description="本地图像分类工具，支持 GUI 和 CLI 两种模式。",
+        prog="ai-media-processor",
+        description="本地 AI 图片/视频处理工具，支持 GUI 和 CLI 两种模式。",
     )
     subparsers = parser.add_subparsers(dest="command")
 
