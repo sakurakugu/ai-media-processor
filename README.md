@@ -1,11 +1,8 @@
 # AI Media Processor
 
-一个本地 AI 图片/视频处理工具的最小骨架，当前目标是先把分类流程跑通：
+一个本地 AI 图片/视频处理工具：
 
-- 选择单张图片、单个视频或一个目录
-- 按固定类别分类
-- 在桌面 GUI 里查看结果
-- 后续再接 OCR、细分类、梗图拆分等能力
+- 当前只能分类图片
 
 当前固定类别：
 
@@ -59,15 +56,14 @@ ai-media-processor/
 ├─ docs/
 │  └─ architecture.md
 └─ src/
-   └─ image_classifier_local/
-      ├─ gui.py
-      ├─ models.py
-      ├─ pipeline.py
-      └─ backends/
-         ├─ base.py
-         ├─ mock.py
-         ├─ ollama.py
-         └─ openai_compatible.py
+   ├─ gui.py
+   ├─ models.py
+   ├─ pipeline.py
+   └─ backends/
+      ├─ base.py
+      ├─ mock.py
+      ├─ ollama.py
+      └─ openai_compatible.py
 ```
 
 ## 快速启动
@@ -95,7 +91,7 @@ ollama run qwen3.5:4b
 ### 2. 运行 GUI
 
 ```powershell
-python app.py
+python main.py
 ```
 
 默认后端是 `mock`，不需要模型即可运行。
@@ -164,29 +160,7 @@ CLI 输出格式：
 
 ## 接入本地视觉模型
 
-这个项目不直接绑定某一个推理框架，当前既支持直接连接 Ollama，也支持通过 OpenAI 兼容接口接其他后端，目的是先把工具层稳定下来。
-
-你后续可以接：
-
-- 本地 `Ollama`
-- 本地 `vLLM` 服务
-- 本地 `SGLang` 服务
-- 其他支持 OpenAI 兼容 `/chat/completions` 的服务
-
-GUI 里要填的字段：
-
-- `Base URL`：Ollama 通常是 `http://127.0.0.1:11434`，OpenAI 兼容服务例如 `http://127.0.0.1:8000/v1`
-- `Model`：Ollama 例如 `qwen3.5:4b`，OpenAI 兼容服务例如 `Qwen/Qwen3.5-4B`
-- `API Key`：Ollama 可留空，某些 OpenAI 兼容服务要求填任意字符串
-
-本地服务接入文档见：`docs/qwen35_local_setup.md:1`
-
-## 当前适合的使用方式
-
-- 先在 `mock` 模式下确认 GUI、目录扫描、CSV 导出都正常
-- 再切到本地模型服务
-- 先人工抽样 100 张图检查分类效果
-- 最后决定是否需要二阶段分类或 OCR
+这个项目不直接绑定某一个推理框架，当前既支持直接连接 Ollama，也支持通过 OpenAI 兼容接口接其他后端。
 
 ## 输出说明
 
