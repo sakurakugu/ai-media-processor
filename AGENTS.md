@@ -1,7 +1,6 @@
 ## 约定
 
 - Python 使用 mypy 和 ruff
-- Node 使用 "npm run lint && npm run typecheck"
 - 修改后要通过上述检查来防止编辑错误
 - ollama使用 11434 端口
 - 如需安装库，直接安装
