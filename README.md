@@ -2,7 +2,7 @@
 
 一个本地 AI 图片/视频处理工具：
 
-- 当前只能分类图片
+- 当前只能分类图片和视频
 
 当前固定类别：
 
@@ -36,14 +36,15 @@
 - `ollama`：直接连接本地 Ollama，适合当前这台 Windows 机器快速落地
 - `openai_compatible`：连接本地 OpenAI 兼容视觉服务，适合后续接 `Qwen3.5-4B` 或其他视觉模型
 
-## 推荐路线
+## 快速开始
 
-机器是 `16GB VRAM`，第一版建议：
-
-- 先用 `Qwen3.5-4B`
-- 先做固定 5 分类
-- 先跑批处理与人工复核
-- 后续再加 OCR 和更细分类
+```bash
+# 先进入目录
+pip install -r requirements.txt
+# 没安装 ollama 的输入: irm https://ollama.com/install.ps1 | iex
+ollama pull qwen3.5:4b
+python main.py
+```
 
 ## 目录结构
 
@@ -66,12 +67,12 @@ ai-media-processor/
       └─ openai_compatible.py
 ```
 
-## 快速启动
+## GUI 用法
 
 ### 1. 创建环境
 
 ```powershell
-cd D:\elric\Code\ai-media-processor
+cd D:\ai-media-processor
 # python -m venv .venv
 # .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
