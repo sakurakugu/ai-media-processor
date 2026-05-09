@@ -66,6 +66,8 @@ class App:
         self.is_refreshing_ollama_model = False
         self.skipped_count = 0
         self.cancel_event = threading.Event()
+        self.right_scroll_canvas: tk.Canvas | None = None
+        self.right_panel_window_id = 0
         self.status_var = tk.StringVar(value="就绪")
         self.backend_var = tk.StringVar(value="本地 Ollama")
         self.base_url_var = tk.StringVar(value=DEFAULT_OLLAMA_BASE_URL)
@@ -86,9 +88,15 @@ class App:
         self._enable_drop_target(self.root)
         container = ttk.Frame(self.root, padding=10)
         container.pack(fill=BOTH, expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(1, weight=1)
 
-        top = ttk.LabelFrame(container, text="后端配置", padding=10)
-        top.pack(fill="x")
+        header = ttk.Frame(container)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+
+        top = ttk.LabelFrame(header, text="后端配置", padding=10)
+        top.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(top, text="后端类型").grid(row=0, column=0, sticky=W, padx=4, pady=4)
         ttk.Combobox(
@@ -133,8 +141,8 @@ class App:
         self.toggle_model_button.pack(side=LEFT, padx=(0, 8))
         ttk.Button(button_bar, text="测试连接", command=self.test_connection).pack(side=LEFT)
 
-        action_bar = ttk.Frame(container, padding=(0, 10))
-        action_bar.pack(fill="x")
+        action_bar = ttk.Frame(header, padding=(0, 10, 0, 0))
+        action_bar.grid(row=1, column=0, sticky="ew")
 
         self.add_files_button = ttk.Button(action_bar, text="添加文件", command=self.add_files)
         self.add_files_button.pack(side=LEFT, padx=4)
@@ -178,14 +186,19 @@ class App:
         ttk.Button(action_bar, text="导出 JSON", command=self.export_json).pack(side=LEFT, padx=4)
 
         body = ttk.Panedwindow(container, orient="horizontal")
-        body.pack(fill=BOTH, expand=True)
+        body.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
 
         left = ttk.Frame(body, padding=(0, 0, 10, 0))
         right = ttk.Frame(body)
         body.add(left, weight=3)
         body.add(right, weight=2)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(0, weight=1)
 
-        file_list_frame = ttk.Frame(left)
+        file_panel = ttk.LabelFrame(left, text="全部图片", padding=8)
+        file_panel.pack(fill=BOTH, expand=True)
+
+        file_list_frame = ttk.Frame(file_panel)
         file_list_frame.pack(fill=BOTH, expand=True)
 
         file_list_scrollbar = ttk.Scrollbar(file_list_frame, orient=VERTICAL)
@@ -201,7 +214,33 @@ class App:
         self.file_list.bind("<<ListboxSelect>>", self._on_select_item)
         self._enable_drop_target(self.file_list)
 
-        result_frame = ttk.LabelFrame(right, text="分类结果", padding=8)
+        right_scrollbar = ttk.Scrollbar(right, orient=VERTICAL)
+        right_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        right_canvas = tk.Canvas(right, highlightthickness=0, yscrollcommand=right_scrollbar.set)
+        right_canvas.grid(row=0, column=0, sticky="nsew")
+        self.right_scroll_canvas = right_canvas
+        right_scrollbar.configure(command=right_canvas.yview)
+
+        right_content = ttk.Frame(right_canvas)
+        self.right_panel_window_id = right_canvas.create_window(
+            (0, 0),
+            window=right_content,
+            anchor="nw",
+        )
+        right_content.bind(
+            "<Configure>",
+            lambda _event: right_canvas.configure(scrollregion=right_canvas.bbox("all")),
+        )
+        right_canvas.bind(
+            "<Configure>",
+            lambda event: right_canvas.itemconfigure(
+                self.right_panel_window_id,
+                width=event.width,
+            ),
+        )
+
+        result_frame = ttk.LabelFrame(right_content, text="分类结果", padding=8)
         result_frame.pack(fill=BOTH, expand=True)
 
         columns = ("path", "label", "confidence")
@@ -228,7 +267,7 @@ class App:
         result_tree_scrollbar.configure(command=self.result_tree.yview)
         self.result_tree.bind("<<TreeviewSelect>>", self._on_select_result)
 
-        detail_frame = ttk.LabelFrame(right, text="预览 / 详情", padding=8)
+        detail_frame = ttk.LabelFrame(right_content, text="预览 / 详情", padding=8)
         detail_frame.pack(fill=BOTH, expand=True, pady=(10, 0))
 
         self.preview_label = ttk.Label(detail_frame, text="未选择图片")
@@ -249,7 +288,7 @@ class App:
         self.reason_text.pack(side=LEFT, fill=BOTH, expand=True)
         reason_scrollbar.configure(command=self.reason_text.yview)
 
-        skipped_frame = ttk.LabelFrame(right, text="跳过文件", padding=8)
+        skipped_frame = ttk.LabelFrame(right_content, text="跳过文件", padding=8)
         skipped_frame.pack(fill=BOTH, expand=False, pady=(10, 0))
 
         skipped_text_frame = ttk.Frame(skipped_frame)
@@ -267,9 +306,10 @@ class App:
         self.skipped_text.pack(side=LEFT, fill=BOTH, expand=True)
         skipped_text_scrollbar.configure(command=self.skipped_text.yview)
         self._enable_drop_target(self.skipped_text)
+        self._bind_right_panel_mousewheel(right)
 
         status = ttk.Label(container, textvariable=self.status_var, anchor=W)
-        status.pack(fill="x", pady=(10, 0))
+        status.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
     def add_files(self) -> None:
         paths = filedialog.askopenfilenames(
@@ -764,6 +804,34 @@ class App:
         self.skipped_text.delete("1.0", END)
         for item in self.skipped_items:
             self._append_skipped_item(item)
+
+    def _bind_right_panel_mousewheel(self, widget: tk.Misc) -> None:
+        excluded_widgets = {self.result_tree, self.reason_text, self.skipped_text}
+        if widget not in excluded_widgets:
+            widget.bind("<MouseWheel>", self._on_right_panel_mousewheel, add="+")
+            widget.bind("<Button-4>", self._on_right_panel_scroll_up, add="+")
+            widget.bind("<Button-5>", self._on_right_panel_scroll_down, add="+")
+        for child in widget.winfo_children():
+            self._bind_right_panel_mousewheel(child)
+
+    def _on_right_panel_mousewheel(self, event: tk.Event[tk.Misc]) -> str:
+        if self.right_scroll_canvas is None or event.delta == 0:
+            return "break"
+        step = -1 if event.delta > 0 else 1
+        self.right_scroll_canvas.yview_scroll(step, "units")
+        return "break"
+
+    def _on_right_panel_scroll_up(self, _event: tk.Event[tk.Misc]) -> str:
+        if self.right_scroll_canvas is None:
+            return "break"
+        self.right_scroll_canvas.yview_scroll(-1, "units")
+        return "break"
+
+    def _on_right_panel_scroll_down(self, _event: tk.Event[tk.Misc]) -> str:
+        if self.right_scroll_canvas is None:
+            return "break"
+        self.right_scroll_canvas.yview_scroll(1, "units")
+        return "break"
 
     def _enable_drop_target(self, widget) -> None:
         if DND_FILES is None or not hasattr(widget, "drop_target_register"):
