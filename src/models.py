@@ -22,7 +22,7 @@ DEFAULT_VIDEO_FRAME_COUNT = 5
 
 LABEL_DISPLAY_NAMES = {
     "screenshot_text": "截图/文字图",
-    "cosplay": "Cosplay",
+    "cosplay": "Cosplay 真人",
     "anime_art": "二次元美图",
     "meme": "表情包/梗图",
     "other": "其他",
@@ -30,7 +30,7 @@ LABEL_DISPLAY_NAMES = {
 
 LABEL_FOLDER_NAMES = {
     "screenshot_text": "截图文字图",
-    "cosplay": "Cosplay",
+    "cosplay": "Cosplay 真人",
     "anime_art": "二次元美图",
     "meme": "表情包梗图",
     "other": "其他",
