@@ -103,7 +103,6 @@ class OllamaBackend(BaseClassifierBackend):
             ],
             "stream": False,
             "think": False,
-            "options": {"temperature": 0},
         }
 
     def _root_url(self) -> str:

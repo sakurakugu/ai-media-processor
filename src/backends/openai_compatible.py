@@ -93,7 +93,6 @@ class OpenAICompatibleBackend(BaseClassifierBackend):
                     ],
                 },
             ],
-            "temperature": 0,
             "max_tokens": 256,
             "chat_template_kwargs": {"enable_thinking": False},
         }
